@@ -1,0 +1,21 @@
+# Virtual environment
+venv/
+
+# Temp folders
+tmp/
+.tmp/
+duckdb_temp/
+duckdb_temp_storage_*
+*.tmp
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Data files
+*.parquet
+*.gz
+*.log
+
+# Optional: screenshots / design refs
+SS/
