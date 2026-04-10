@@ -10,9 +10,7 @@ import streamlit as st
 # CONFIG
 # ============================================================
 PARQUET_SOURCES = [
-    "D:/VETO Logs/01 parquet/*.parquet",
-    "D:/VETO Logs/02 parquet/*.parquet",
-
+    "D:/VETO Logs/01_parquet/date=2026-03-31/00000000.parquet"
 ]
 LOCAL_TZ = "Asia/Kolkata"
 

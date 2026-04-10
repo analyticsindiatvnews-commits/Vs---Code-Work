@@ -43,15 +43,15 @@ from tqdm import tqdm
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
 
-INPUT_DIR  = r"D:\VETO Logs\03"
-OUTPUT_DIR = r"D:\VETO Logs\03 parquet"
+INPUT_DIR  = r"D:\VETO Logs\04"
+OUTPUT_DIR = r"D:\VETO Logs\04 parquet"
 META_FILE  = os.path.join(OUTPUT_DIR, "file_hashes.jsonl")
 
 # How many .gz files to merge into one output parquet file.
 # 1000 is a good default: 300k files → ~300 parquet files.
 # Increase to 5000 if you want fewer, larger files.
 # Set to 1 to keep one parquet per gz (not recommended at this scale).
-BATCH_SIZE = 50000
+BATCH_SIZE = 8000
 
 # All 68 fields that are purely numeric in your DataStream 2 format.
 # All other fields are kept as strings (or None).
