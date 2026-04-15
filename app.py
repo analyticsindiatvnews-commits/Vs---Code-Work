@@ -11,7 +11,7 @@ import streamlit as st
 # CONFIG
 # ============================================================
 # Use forward slashes for the glob path to prevent escape character issues in SQL
-PARQUET_GLOB = "D:/VETO Logs/parquet/**/*.parquet"
+PARQUET_GLOB = "D:/VETO Logs/parquet_output/*.parquet"
 LOCAL_TZ = "Asia/Kolkata"
 
 st.set_page_config(
