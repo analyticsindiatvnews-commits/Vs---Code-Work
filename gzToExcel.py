@@ -37,7 +37,7 @@ def gz_to_excel(input_file, output_file):
         print(f"An error occurred: {e}")
 
 # --- Run ---
-input_gz = "ak-199952-1775615225-577717-ds.gz" # Your file path
-output_xlsx = "logs_output.xlsx"
+input_gz = "ak-000003-1775439489-341027-ds.gz" # Your file path
+output_xlsx = "06.xlsx"
 
 gz_to_excel(input_gz, output_xlsx)
