@@ -6,7 +6,7 @@ from multiprocessing import Pool, cpu_count
 from collections import defaultdict
 from tqdm import tqdm
 
-FOLDER_PATH = r'Z:\Testing Sync'
+FOLDER_PATH = r'D:\VETO Logs\08'
 PLACEHOLDERS = {"-", "^"}
 
 def process_single_file(file_path):
