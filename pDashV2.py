@@ -169,12 +169,16 @@ def count_stats(folder_key: str):
     return len(files), total_rows, n_folders
 
 
-@st.cache_data(show_spinner="Scanning unique values ...", max_entries=32)
 def unique_values(folder_key: str, column: str) -> pd.DataFrame:
     folders = folder_key.split("|")
     files   = collect_files(folders)
+    total   = len(files)
     counter = {}
-    for f in files:
+
+    bar = st.progress(0, text=f"Scanning unique values ... 0 / {total:,} files")
+    for i, f in enumerate(files):
+        pct = int((i + 1) / total * 100) if total else 100
+        bar.progress(pct, text=f"Scanning unique values ... {i+1:,} / {total:,} files")
         try:
             if column not in pq.read_schema(f).names:
                 continue
@@ -185,12 +189,14 @@ def unique_values(folder_key: str, column: str) -> pd.DataFrame:
                 counter[val] = counter.get(val, 0) + item["counts"].as_py()
         except Exception:
             continue
+
+    bar.empty()
     if not counter:
         return pd.DataFrame(columns=["value", "count", "% of rows"])
     df    = pd.DataFrame(list(counter.items()), columns=["value", "count"])
     df    = df.sort_values("count", ascending=False).reset_index(drop=True)
-    total = df["count"].sum()
-    df["% of rows"] = (df["count"] / total * 100).round(2)
+    total_rows = df["count"].sum()
+    df["% of rows"] = (df["count"] / total_rows * 100).round(2)
     return df
 
 
@@ -225,14 +231,28 @@ def apply_all_filters(tbl, filters: dict, dual: dict):
     return tbl
 
 
-def run_query(folder_key: str, sel_cols: list, filters: dict, dual: dict, max_rows=None) -> pd.DataFrame:
+def run_query(
+    folder_key: str,
+    sel_cols: list,
+    filters: dict,
+    dual: dict,
+    max_rows=None,
+    progress_label: str = "Scanning files",
+) -> pd.DataFrame:
     folders   = folder_key.split("|")
     files     = collect_files(folders)
+    total     = len(files)
     frames    = []
     collected = 0
-    for f in files:
+
+    bar  = st.progress(0, text=f"{progress_label} ... 0 / {total:,} files")
+    info = st.empty()
+
+    for i, f in enumerate(files):
         if max_rows is not None and collected >= max_rows:
             break
+        pct  = int((i + 1) / total * 100) if total else 100
+        bar.progress(pct, text=f"{progress_label} ... {i+1:,} / {total:,} files  |  {collected:,} rows found")
         try:
             avail = [c for c in sel_cols if c in pq.read_schema(f).names]
             if not avail:
@@ -246,6 +266,9 @@ def run_query(folder_key: str, sel_cols: list, filters: dict, dual: dict, max_ro
             collected += len(chunk)
         except Exception:
             continue
+
+    bar.empty()
+    info.empty()
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -474,8 +497,7 @@ with tab2:
     col_pick = st.selectbox("Column", options=columns, key="uv_col")
 
     if st.button("1  Count unique values", type="secondary", key="btn_count"):
-        with st.spinner("Scanning all files ..."):
-            udf_all = unique_values(folder_key, col_pick)
+        udf_all = unique_values(folder_key, col_pick)
         st.session_state[f"udf_{col_pick}"] = udf_all
         st.session_state[f"n_{col_pick}"]   = len(udf_all)
 
@@ -533,6 +555,68 @@ with tab2:
                 top10 = display_df.head(10)
                 if not top10.empty:
                     st.bar_chart(top10.set_index("value")["count"])
+
+            # ── Extract rows for a specific value ──────────────
+            st.markdown("---")
+            st.markdown("#### Extract all rows for a specific value")
+            st.caption(
+                f"Pick one or more values from `{col_pick}` — get every matching row across all files as a CSV."
+            )
+
+            pick_vals = st.multiselect(
+                f"Select value(s) from `{col_pick}`",
+                options=display_df["value"].tolist(),
+                placeholder="Click or type to pick values ...",
+                key="extract_vals",
+            )
+
+            extract_cols = st.multiselect(
+                "Columns to include in extracted CSV  (leave empty = all columns)",
+                options=columns,
+                default=[],
+                key="extract_cols",
+            )
+
+            if pick_vals:
+                st.info(
+                    f"Will extract all rows where `{col_pick}` is one of: "
+                    + ", ".join(f"**{v}**" for v in pick_vals[:5])
+                    + (f" ... (+{len(pick_vals)-5} more)" if len(pick_vals) > 5 else "")
+                )
+
+                xc1, xc2 = st.columns([1, 1])
+                with xc1:
+                    preview_extract = st.button("👀 Preview rows", key="btn_extract_preview", type="secondary")
+                with xc2:
+                    export_extract  = st.button("💾 Export rows to CSV", key="btn_extract_export", type="primary")
+
+                out_cols = extract_cols if extract_cols else columns
+
+                if preview_extract or export_extract:
+                    df_extracted = run_query(
+                        folder_key,
+                        out_cols,
+                        filters={col_pick: pick_vals},
+                        dual={},
+                        max_rows=500 if preview_extract else None,
+                    )
+
+                    if df_extracted.empty:
+                        st.warning("No rows found.")
+                    elif preview_extract:
+                        st.caption(f"Preview — first {len(df_extracted):,} rows")
+                        st.dataframe(df_extracted, use_container_width=True, height=380)
+                    else:
+                        csv_bytes = df_extracted.to_csv(index=False).encode()
+                        fname = f"rows_{col_pick}_{'_'.join(str(v)[:20] for v in pick_vals[:3])}.csv"
+                        st.download_button(
+                            label=f"📥 Download  ({len(df_extracted):,} rows)",
+                            data=csv_bytes,
+                            file_name=fname,
+                            mime="text/csv",
+                            key="dl_extract",
+                        )
+                        st.success(f"{len(df_extracted):,} rows ready to download.")
 
 
 # ══════════════════════════════════════════════
@@ -628,8 +712,7 @@ with tab3:
         if not sel_cols:
             st.warning("Select at least one column.")
         else:
-            with st.spinner("Loading ..."):
-                df = run_query(folder_key, sel_cols, filters, dual, max_rows=int(n_preview))
+            df = run_query(folder_key, sel_cols, filters, dual, max_rows=int(n_preview))
             if df.empty:
                 st.warning("No rows match your filters.")
             else:
@@ -640,8 +723,7 @@ with tab3:
         if not sel_cols:
             st.warning("Select at least one column.")
         else:
-            with st.spinner("Scanning all files ... this may take a while."):
-                df_all = run_query(folder_key, sel_cols, filters, dual, max_rows=None)
+            df_all = run_query(folder_key, sel_cols, filters, dual, max_rows=None)
             if df_all.empty:
                 st.warning("No rows match your filters.")
             else:
