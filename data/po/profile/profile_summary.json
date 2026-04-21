@@ -1,0 +1,10 @@
+{
+  "total_rows_seen": 10945,
+  "valid_rows": 10945,
+  "invalid_json_rows": 0,
+  "nondict_rows": 0,
+  "unique_columns": 68,
+  "blank_columns": 14,
+  "columns_with_data": 54,
+  "files_with_errors": 0
+}

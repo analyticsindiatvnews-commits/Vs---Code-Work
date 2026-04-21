@@ -1,0 +1,886 @@
+[
+  {
+    "column_name": "UA",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "accLang",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "arlid",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "asn",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "billingRegion",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "breadcrumbs",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "bytes",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "cacheStatus",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "cacheable",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "city",
+    "status": "HAS_DATA",
+    "filled_rows": 8460,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 77.2956,
+    "pct_filled_when_present": 77.2956,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "cliIP",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "cmcd",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "contentProtectionInfo",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "cookie",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "country",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "cp",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "customField",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "deliveryFormat",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "deliveryPolicyId",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "deliveryPolicyReqStatus",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "deliveryType",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "dnsLookupTimeMSec",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "downloadInitiated",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "downloadTime",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "downloadsCompleted",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "edgeAttempts",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "edgeIP",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "edgeIPBinding",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "errorCode",
+    "status": "HAS_DATA",
+    "filled_rows": 39,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.3563,
+    "pct_filled_when_present": 0.3563,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "ewExecutionInfo",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "ewUsageInfo",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "fileSizeBucket",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "lastByte",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "maxAgeSec",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "mediaEncryption",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "objSize",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "overheadBytes",
+    "status": "HAS_DATA",
+    "filled_rows": 100,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.9137,
+    "pct_filled_when_present": 0.9137,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "prefetchMidgressHits",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "proto",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "queryStr",
+    "status": "HAS_DATA",
+    "filled_rows": 4812,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 43.9653,
+    "pct_filled_when_present": 43.9653,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "range",
+    "status": "HAS_DATA",
+    "filled_rows": 87,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.7949,
+    "pct_filled_when_present": 0.7949,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "referer",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "reqEndTimeMSec",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "reqHost",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "reqId",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "reqMethod",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "reqPath",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "reqPort",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "reqTimeSec",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "rspContentLen",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "rspContentType",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "securityRules",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "serverCountry",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "startupError",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "state",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "statusCode",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "streamId",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "throughput",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "timeToFirstByte",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "tlsEarlyData",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "tlsOverheadTimeMSec",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "tlsVersion",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "totalBytes",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "transferTimeMSec",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "turnAroundTimeMSec",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "uncompressedSize",
+    "status": "HAS_DATA",
+    "filled_rows": 6175,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 56.4185,
+    "pct_filled_when_present": 56.4185,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "version",
+    "status": "HAS_DATA",
+    "filled_rows": 10945,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 100.0,
+    "pct_filled_when_present": 100.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  },
+  {
+    "column_name": "xForwardedFor",
+    "status": "BLANK",
+    "filled_rows": 0,
+    "present_rows": 10945,
+    "valid_rows": 10945,
+    "pct_filled_all_valid_rows": 0.0,
+    "pct_filled_when_present": 0.0,
+    "dominant_type": "str",
+    "type_breakdown": {
+      "str": 10945
+    }
+  }
+]
