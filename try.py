@@ -1,178 +1,138 @@
 import re
 from pathlib import Path
-from urllib.parse import parse_qs, unquote_plus
 from datetime import time
+from urllib.parse import unquote_plus
 
+import duckdb
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 
 st.set_page_config(
-    page_title="User Behavior Dashboard",
+    page_title="User Behavior Dashboard - Parquet",
     page_icon="📺",
     layout="wide"
 )
 
+DEFAULT_PARQUET_PATH = r"Z:\Veto Logs Parquet\01.parquet"
+WATCH_GAP_CAP_SECONDS = 60
 
-# -------------------------------------------------
+
+# =================================================
 # Helpers
-# -------------------------------------------------
-def safe_read_csv(path: str) -> pd.DataFrame:
-    return pd.read_csv(path, low_memory=False)
+# =================================================
+def extract_channel_from_path_series(path_s: pd.Series) -> pd.Series:
+    return path_s.astype(str).str.extract(r"(vglive-sk-\d+)", expand=False)
 
 
-def extract_qs_param(qs: str, key: str):
-    if pd.isna(qs):
-        return None
-    qs = str(qs)
-    try:
-        parsed = parse_qs(qs, keep_blank_values=True)
-        vals = parsed.get(key)
-        if vals:
-            return vals[0]
-    except Exception:
-        pass
+def extract_quality_from_path_series(path_s: pd.Series) -> pd.Series:
+    s = path_s.fillna("").astype(str)
 
-    m = re.search(rf"(?:^|&){re.escape(key)}=([^&]+)", qs)
-    if m:
-        return unquote_plus(m.group(1))
-    return None
+    quality = s.str.extract(r"(\d+p)", expand=False)
+    variant = s.str.extract(r"main_(\d+)\.m3u8", expand=False)
+
+    out = quality.copy()
+    out = out.where(out.notna(), "variant_" + variant.astype(str))
+    out = out.where(~s.str.contains("main.m3u8", na=False), "master")
+    out = out.where(~s.str.contains(r"\.ts", na=False), "segment")
+    out = out.fillna("unknown")
+    out = out.replace("variant_nan", "unknown")
+    return out
 
 
-def extract_channel_from_path(path: str):
-    if pd.isna(path):
-        return None
-    m = re.search(r"(vglive-sk-\d+)", str(path))
-    return m.group(1) if m else None
+def infer_device_type_vectorized(ua_s: pd.Series, platform_s: pd.Series) -> pd.Series:
+    ua = ua_s.fillna("").astype(str).str.lower()
+    platform = platform_s.fillna("").astype(str).str.lower()
 
+    out = pd.Series("Other", index=ua.index)
 
-def extract_quality_from_path(path: str):
-    if pd.isna(path):
-        return None
+    smart_tv_mask = (
+        platform.str.contains("android_tv", na=False)
+        | ua.str.contains("smarttv|hismarttv|bravia", na=False)
+        | ua.str.contains(r"\btv\b", na=False)
+    )
+    android_mask = ua.str.contains("android", na=False)
+    iphone_mask = ua.str.contains("iphone", na=False)
+    ipad_mask = ua.str.contains("ipad", na=False)
+    windows_mask = ua.str.contains("windows", na=False)
+    mac_mask = ua.str.contains("mac", na=False)
 
-    path = str(path)
+    out = out.mask(smart_tv_mask, "Smart TV")
+    out = out.mask(~smart_tv_mask & android_mask, "Android")
+    out = out.mask(iphone_mask, "iPhone")
+    out = out.mask(ipad_mask, "iPad")
+    out = out.mask(windows_mask, "Windows")
+    out = out.mask(mac_mask, "Mac")
 
-    m = re.search(r"(\d+p)", path)
-    if m:
-        return m.group(1)
-
-    m2 = re.search(r"main_(\d+)\.m3u8", path)
-    if m2:
-        return f"variant_{m2.group(1)}"
-
-    if "main.m3u8" in path:
-        return "master"
-
-    if ".ts" in path:
-        return "segment"
-
-    return "unknown"
-
-
-def infer_device_type(ua: str, platform: str = None):
-    u = "" if pd.isna(ua) else str(ua).lower()
-    p = "" if pd.isna(platform) else str(platform).lower()
-
-    if "android_tv" in p or "smarttv" in u or "hismarttv" in u or "bravia" in u or "tv" in u:
-        return "Smart TV"
-    if "android" in u:
-        return "Android"
-    if "iphone" in u:
-        return "iPhone"
-    if "ipad" in u:
-        return "iPad"
-    if "windows" in u:
-        return "Windows"
-    if "mac" in u:
-        return "Mac"
-    return "Other"
+    return out
 
 
 def build_sessions(df: pd.DataFrame, gap_minutes: int = 20) -> pd.DataFrame:
     df = df.sort_values(["device_id", "event_time"]).copy()
 
-    # previous values
-    df["prev_time"] = df.groupby("device_id")["event_time"].shift(1)
-    df["prev_session_id"] = df.groupby("device_id")["session_id"].shift(1) if "session_id" in df.columns else None
-    df["prev_channel"] = df.groupby("device_id")["channel_name"].shift(1) if "channel_name" in df.columns else None
-    df["prev_ip"] = df.groupby("device_id")["cliIP"].shift(1) if "cliIP" in df.columns else None
-    df["prev_asn"] = df.groupby("device_id")["asn"].shift(1) if "asn" in df.columns else None
-    df["prev_platform"] = df.groupby("device_id")["platform"].shift(1) if "platform" in df.columns else None
+    grp = df.groupby("device_id", sort=False)
 
-    # time gap
+    df["prev_time"] = grp["event_time"].shift(1)
     df["gap_min"] = (df["event_time"] - df["prev_time"]).dt.total_seconds() / 60
 
-    # RULE 1: first row
     first_row = df["prev_time"].isna()
-
-    # RULE 2: long inactivity
     long_gap = df["gap_min"] > gap_minutes
 
-    # RULE 3: session_id change (strongest signal)
-    session_id_changed = False
     if "session_id" in df.columns:
+        df["prev_session_id"] = grp["session_id"].shift(1)
         session_id_changed = (
             df["session_id"].fillna("__null__") != df["prev_session_id"].fillna("__null__")
         )
+    else:
+        session_id_changed = pd.Series(False, index=df.index)
 
-    # RULE 4: context change (medium signal)
-    channel_changed = (
-        df["channel_name"].fillna("__null__") != df["prev_channel"].fillna("__null__")
-    ) if "channel_name" in df.columns else False
+    df["prev_channel"] = grp["channel_name"].shift(1)
+    channel_changed = df["channel_name"].fillna("__null__") != df["prev_channel"].fillna("__null__")
 
-    ip_changed = (
-        df["cliIP"].astype(str).fillna("__null__") != df["prev_ip"].astype(str).fillna("__null__")
-    ) if "cliIP" in df.columns else False
+    if "cliIP" in df.columns:
+        df["prev_ip"] = grp["cliIP"].shift(1)
+        ip_changed = df["cliIP"].astype(str).fillna("__null__") != df["prev_ip"].astype(str).fillna("__null__")
+    else:
+        ip_changed = pd.Series(False, index=df.index)
 
-    asn_changed = (
-        df["asn"].astype(str).fillna("__null__") != df["prev_asn"].astype(str).fillna("__null__")
-    ) if "asn" in df.columns else False
+    if "asn" in df.columns:
+        df["prev_asn"] = grp["asn"].shift(1)
+        asn_changed = df["asn"].astype(str).fillna("__null__") != df["prev_asn"].astype(str).fillna("__null__")
+    else:
+        asn_changed = pd.Series(False, index=df.index)
 
-    platform_changed = (
-        df["platform"].fillna("__null__") != df["prev_platform"].fillna("__null__")
-    ) if "platform" in df.columns else False
+    df["prev_platform"] = grp["platform"].shift(1)
+    platform_changed = df["platform"].fillna("__null__") != df["prev_platform"].fillna("__null__")
 
-    # moderate gap + context shift
     medium_gap = df["gap_min"] > 8
-
     context_score = (
         channel_changed.astype(int)
         + ip_changed.astype(int)
         + asn_changed.astype(int)
         + platform_changed.astype(int)
     )
-
     smart_break = medium_gap & (context_score >= 2)
 
-    # FINAL DECISION
     df["new_session"] = first_row | long_gap | session_id_changed | smart_break
-
-    df["session_no"] = df.groupby("device_id")["new_session"].cumsum()
+    df["session_no"] = grp["new_session"].cumsum()
     df["session_key"] = df["device_id"].astype(str) + "_S" + df["session_no"].astype(str)
 
     return df
 
 
-def estimate_watch_minutes(df: pd.DataFrame, cap_seconds: int = 60) -> pd.DataFrame:
+def estimate_watch_minutes(df: pd.DataFrame, cap_seconds: int = WATCH_GAP_CAP_SECONDS) -> pd.DataFrame:
     df = df.sort_values(["device_id", "event_time"]).copy()
-
-    next_time = df.groupby("device_id")["event_time"].shift(-1)
+    next_time = df.groupby("device_id", sort=False)["event_time"].shift(-1)
     gap_sec = (next_time - df["event_time"]).dt.total_seconds()
-
     df["watch_gap_sec_est"] = gap_sec.clip(lower=0, upper=cap_seconds).fillna(0)
     df["watch_min_est"] = df["watch_gap_sec_est"] / 60
-
-    for c in ["transferTimeMSec", "downloadTime", "timeToFirstByte", "rspContentLen", "statusCode", "asn"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
     return df
 
 
 def session_summary(df: pd.DataFrame) -> pd.DataFrame:
     out = (
-        df.groupby("session_key")
+        df.groupby("session_key", sort=False)
         .agg(
             device_id=("device_id", "first"),
             start=("event_time", "min"),
@@ -183,107 +143,146 @@ def session_summary(df: pd.DataFrame) -> pd.DataFrame:
             est_watch_min=("watch_min_est", "sum"),
             top_channel=("channel_name", lambda s: s.mode().iloc[0] if not s.mode().empty else None),
             top_title=("content_label", lambda s: s.mode().iloc[0] if not s.mode().empty else None),
-            top_quality=("quality", lambda s: s.mode().iloc[0] if not s.mode().empty else None),
-            top_asn=("asn", lambda s: s.mode().iloc[0] if not s.mode().empty else None),
         )
         .reset_index()
     )
-
     out["session_duration_min"] = (out["end"] - out["start"]).dt.total_seconds() / 60
-    out["date"] = out["start"].dt.date
-    return out.sort_values("start")
+    return out.sort_values("start").reset_index(drop=True)
 
 
-# -------------------------------------------------
+@st.cache_resource
+def get_conn():
+    con = duckdb.connect(database=":memory:")
+    con.execute("PRAGMA threads=4")
+    return con
+
+
+@st.cache_data(show_spinner="Scanning device IDs from parquet...", ttl=1800)
+def get_device_ids(parquet_path: str) -> list[str]:
+    con = get_conn()
+    query = f"""
+    SELECT DISTINCT regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) AS device_id
+    FROM read_parquet('{parquet_path}')
+    WHERE queryStr IS NOT NULL
+      AND regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) <> ''
+    ORDER BY 1
+    """
+    df = con.execute(query).df()
+    return df["device_id"].astype(str).tolist()
+
+
+@st.cache_data(show_spinner="Loading selected device from parquet...", ttl=600)
+def load_device_slice(parquet_path: str, selected_device: str, start_date, end_date) -> pd.DataFrame:
+    con = get_conn()
+    query = f"""
+    SELECT
+        queryStr,
+        reqTimeSec,
+        reqPath,
+        UA,
+        cliIP,
+        asn,
+        statusCode,
+        transferTimeMSec,
+        downloadTime,
+        regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) AS device_id,
+        regexp_extract(queryStr, '(?:^|&)session_id=([^&]+)', 1) AS session_id,
+        regexp_extract(queryStr, '(?:^|&)channel=([^&]+)', 1) AS channel_param,
+        regexp_extract(queryStr, '(?:^|&)content_type=([^&]+)', 1) AS content_type,
+        regexp_extract(queryStr, '(?:^|&)content_title=([^&]+)', 1) AS content_title,
+        regexp_extract(queryStr, '(?:^|&)platform=([^&]+)', 1) AS platform,
+        regexp_extract(queryStr, '(?:^|&)device=([^&]+)', 1) AS device_name_qs,
+        regexp_extract(queryStr, '(?:^|&)category_name=([^&]+)', 1) AS category_name
+    FROM read_parquet('{parquet_path}')
+    WHERE regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) = ?
+      AND to_timestamp(TRY_CAST(reqTimeSec AS BIGINT))::DATE BETWEEN ? AND ?
+    ORDER BY TRY_CAST(reqTimeSec AS BIGINT)
+    """
+    return con.execute(query, [selected_device, str(start_date), str(end_date)]).df()
+
+
+def enrich_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    out["reqTimeSec"] = pd.to_numeric(out["reqTimeSec"], errors="coerce")
+    out["event_time"] = pd.to_datetime(out["reqTimeSec"], unit="s", errors="coerce")
+    out = out.dropna(subset=["event_time"]).copy()
+
+    for col in ["channel_param", "content_type", "content_title", "platform", "device_name_qs", "category_name", "device_id", "session_id"]:
+        if col in out.columns:
+            out[col] = out[col].fillna("").astype(str).map(unquote_plus)
+
+    out["channel_from_path"] = extract_channel_from_path_series(out["reqPath"])
+    out["quality"] = extract_quality_from_path_series(out["reqPath"])
+
+    out["channel_name"] = out["channel_param"].replace("", pd.NA).fillna(out["channel_from_path"]).fillna("Unknown")
+    out["content_label"] = out["content_title"].replace("", pd.NA).fillna(out["channel_name"]).fillna(out["reqPath"])
+
+    ua_col = out["UA"] if "UA" in out.columns else pd.Series("", index=out.index)
+    out["device_type"] = infer_device_type_vectorized(ua_col, out["platform"])
+
+    for c in ["transferTimeMSec", "downloadTime", "statusCode", "asn"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    out["event_date"] = out["event_time"].dt.date
+    out["time_only"] = out["event_time"].dt.time
+    out["watch_date"] = out["event_date"]
+    out["watch_time_min"] = (
+        out["event_time"].dt.hour * 60
+        + out["event_time"].dt.minute
+        + out["event_time"].dt.second / 60
+    )
+
+    return out.sort_values(["device_id", "event_time"]).reset_index(drop=True)
+
+
+# =================================================
 # Sidebar
-# -------------------------------------------------
+# =================================================
 with st.sidebar:
     st.header("Settings")
-
-    csv_path = st.text_input(
-        "CSV file path",
-        value=r"D:\full_rows_device_id_4cda938608ed98a8.csv"
-    )
-
-    session_gap_minutes = st.number_input(
-        "Session gap (minutes)",
-        min_value=5,
-        max_value=180,
-        value=20,
-        step=5
-    )
-
+    parquet_path = st.text_input("Parquet file path", value=DEFAULT_PARQUET_PATH)
+    session_gap_minutes = st.number_input("Session gap (minutes)", min_value=5, max_value=180, value=20, step=5)
     load_btn = st.button("Load Dashboard", type="primary")
 
-
 if not load_btn:
-    st.info("Enter CSV path and click Load Dashboard.")
+    st.info("Enter parquet path and click Load Dashboard.")
     st.stop()
 
-csv_file = Path(csv_path)
-if not csv_file.exists():
-    st.error(f"File not found: {csv_path}")
+parquet_file = Path(parquet_path)
+if not parquet_file.exists():
+    st.error(f"File not found: {parquet_path}")
     st.stop()
 
-
-# -------------------------------------------------
-# Load data
-# -------------------------------------------------
+# =================================================
+# Device selector
+# =================================================
 try:
-    raw = safe_read_csv(csv_path)
+    device_ids = get_device_ids(parquet_path)
 except Exception as e:
-    st.error(f"Could not read CSV: {e}")
+    st.error(f"Could not scan device IDs: {e}")
     st.stop()
 
-if raw.empty:
-    st.warning("CSV is empty.")
-    st.stop()
-
-required_cols = ["queryStr", "reqTimeSec", "reqPath"]
-missing = [c for c in required_cols if c not in raw.columns]
-if missing:
-    st.error(f"Missing required columns: {missing}")
-    st.stop()
-
-df = raw.copy()
-
-df["reqTimeSec"] = pd.to_numeric(df["reqTimeSec"], errors="coerce")
-df["event_time"] = pd.to_datetime(df["reqTimeSec"], unit="s", errors="coerce")
-df = df.dropna(subset=["event_time"]).copy()
-
-# query string params
-df["device_id"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "device_id"))
-df["session_id"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "session_id"))
-df["channel_param"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "channel"))
-df["content_type"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "content_type"))
-df["content_title"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "content_title"))
-df["platform"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "platform"))
-df["device_name_qs"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "device"))
-df["category_name"] = df["queryStr"].apply(lambda x: extract_qs_param(x, "category_name"))
-
-# path-derived fields
-df["channel_from_path"] = df["reqPath"].apply(extract_channel_from_path)
-df["quality"] = df["reqPath"].apply(extract_quality_from_path)
-
-df["channel_name"] = df["channel_param"].fillna(df["channel_from_path"]).fillna("Unknown")
-df["content_label"] = df["content_title"].fillna(df["channel_name"]).fillna(df["reqPath"])
-df["device_type"] = df.apply(lambda r: infer_device_type(r.get("UA"), r.get("platform")), axis=1)
-
-device_ids = sorted([x for x in df["device_id"].dropna().astype(str).unique().tolist()])
 if not device_ids:
     st.error("No device_id found inside queryStr.")
     st.stop()
 
-
-# -------------------------------------------------
-# Main filters
-# -------------------------------------------------
-st.title("📺 User Behavior Dashboard")
+st.title("📺 User Behavior Dashboard - Parquet")
 
 selected_device = st.selectbox("Select device_id", device_ids)
-device_df_all = df[df["device_id"].astype(str) == str(selected_device)].copy()
 
-all_dates = device_df_all["event_time"].dt.date
+tmp_df = load_device_slice(parquet_path, selected_device, "1970-01-01", "2100-01-01")
+tmp_df = enrich_df(tmp_df)
+
+if tmp_df.empty:
+    st.warning("No rows found for selected device.")
+    st.stop()
+
+all_dates = tmp_df["event_date"]
 
 date_range = st.date_input(
     "Select date range",
@@ -295,35 +294,21 @@ date_range = st.date_input(
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
 else:
-    start_date = all_dates.min()
-    end_date = all_dates.max()
+    start_date, end_date = all_dates.min(), all_dates.max()
 
 c1, c2, c3 = st.columns(3)
-
 with c1:
     start_time = st.time_input("Start time", value=time(0, 0))
-
 with c2:
     end_time = st.time_input("End time", value=time(23, 59))
-
 with c3:
-    min_requests_per_content = st.number_input(
-        "Min requests per content",
-        min_value=1,
-        max_value=1000,
-        value=1,
-        step=1
-    )
+    min_requests_per_content = st.number_input("Min requests per content", min_value=1, max_value=1000, value=1, step=1)
 
-device_df = device_df_all[
-    (device_df_all["event_time"].dt.date >= start_date) &
-    (device_df_all["event_time"].dt.date <= end_date)
-].copy()
+device_df = load_device_slice(parquet_path, selected_device, start_date, end_date)
+device_df = enrich_df(device_df)
 
 device_df = build_sessions(device_df, gap_minutes=session_gap_minutes)
-device_df = estimate_watch_minutes(device_df, cap_seconds=60)
-
-device_df["time_only"] = device_df["event_time"].dt.time
+device_df = estimate_watch_minutes(device_df, cap_seconds=WATCH_GAP_CAP_SECONDS)
 
 window_df = device_df[
     (device_df["time_only"] >= start_time) &
@@ -334,23 +319,18 @@ if window_df.empty:
     st.warning("No activity found in selected date + time range.")
     st.stop()
 
-# FIXED: create these before using them
-start_dt_display = f"{start_date} {start_time}"
-end_dt_display = f"{end_date} {end_time}"
-
 sess_df = session_summary(window_df)
 
-
-# -------------------------------------------------
+# =================================================
 # KPIs
-# -------------------------------------------------
+# =================================================
 first_seen = window_df["event_time"].min()
 last_seen = window_df["event_time"].max()
 sessions = window_df["session_key"].nunique()
 est_watch_hours = round(window_df["watch_min_est"].sum() / 60, 2)
 top_content = window_df["content_label"].mode().iloc[0] if not window_df["content_label"].mode().empty else "Unknown"
 top_channel = window_df["channel_name"].mode().iloc[0] if not window_df["channel_name"].mode().empty else "Unknown"
-top_platform = window_df["platform"].mode().iloc[0] if "platform" in window_df.columns and not window_df["platform"].mode().empty else "Unknown"
+top_platform = window_df["platform"].mode().iloc[0] if not window_df["platform"].mode().empty else "Unknown"
 top_device_type = window_df["device_type"].mode().iloc[0] if not window_df["device_type"].mode().empty else "Unknown"
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
@@ -365,7 +345,7 @@ with st.expander("Window summary", expanded=True):
     s1, s2 = st.columns(2)
     with s1:
         st.write(f"**device_id:** {selected_device}")
-        st.write(f"**Selected window:** {start_dt_display} to {end_dt_display}")
+        st.write(f"**Selected window:** {start_date} {start_time} to {end_date} {end_time}")
         st.write(f"**First event:** {first_seen}")
         st.write(f"**Last event:** {last_seen}")
     with s2:
@@ -377,15 +357,10 @@ with st.expander("Window summary", expanded=True):
         if "device_name_qs" in window_df.columns and not window_df["device_name_qs"].mode().empty:
             st.write(f"**Device name:** {window_df['device_name_qs'].mode().iloc[0]}")
 
-
-# -------------------------------------------------
-# 1 Timeline
-# -------------------------------------------------
 st.markdown("---")
 st.subheader("1) What the user watched in the selected time range")
-
 fig_timeline = px.scatter(
-    window_df.sort_values("event_time"),
+    window_df,
     x="event_time",
     y="channel_name",
     color="content_label",
@@ -396,64 +371,23 @@ fig_timeline.update_traces(marker=dict(opacity=0.85, size=9))
 fig_timeline.update_layout(height=520)
 st.plotly_chart(fig_timeline, use_container_width=True)
 
-
-# -------------------------------------------------
-# 1B Date vs Time Behavior Map (PASTE HERE)
-# -------------------------------------------------
 st.subheader("1B) Date vs Time of Day (behavior pattern)")
-
-plot_df = window_df.sort_values("event_time").copy()
-
-plot_df["watch_date"] = plot_df["event_time"].dt.date
-plot_df["watch_time_min"] = (
-    plot_df["event_time"].dt.hour * 60
-    + plot_df["event_time"].dt.minute
-    + plot_df["event_time"].dt.second / 60
-)
-
 fig_time_map = px.scatter(
-    plot_df,
+    window_df,
     x="watch_date",
     y="watch_time_min",
     color="channel_name",
-    hover_data=[
-        "event_time",
-        "content_label",
-        "reqPath",
-        "quality",
-        "session_key",
-        "asn",
-        "platform"
-    ],
+    hover_data=["event_time", "content_label", "reqPath", "quality", "session_key", "asn", "platform"],
     title="User behavior by date and time of day"
 )
-
 fig_time_map.update_traces(marker=dict(size=8, opacity=0.8))
-
-fig_time_map.update_layout(
-    height=550,
-    xaxis_title="Date",
-    yaxis_title="Time of Day"
-)
-
-# readable Y axis (time)
+fig_time_map.update_layout(height=550, xaxis_title="Date", yaxis_title="Time of Day")
 tick_vals = list(range(0, 1441, 60))
 tick_text = [f"{h:02d}:00" for h in range(25)]
-
-fig_time_map.update_yaxes(
-    tickvals=tick_vals,
-    ticktext=tick_text,
-    range=[0, 1440]
-)
-
+fig_time_map.update_yaxes(tickvals=tick_vals, ticktext=tick_text, range=[0, 1440])
 st.plotly_chart(fig_time_map, use_container_width=True)
 
-
-# -------------------------------------------------
-# 2 Minute activity
-# -------------------------------------------------
 st.subheader("2) Minute-by-minute activity")
-
 minute_activity = (
     window_df.set_index("event_time")
     .resample("1min")
@@ -461,22 +395,11 @@ minute_activity = (
     .rename("requests")
     .reset_index()
 )
-
-fig_minute = px.line(
-    minute_activity,
-    x="event_time",
-    y="requests",
-    title="Activity intensity"
-)
+fig_minute = px.line(minute_activity, x="event_time", y="requests", title="Activity intensity")
 fig_minute.update_layout(height=350)
 st.plotly_chart(fig_minute, use_container_width=True)
 
-
-# -------------------------------------------------
-# 3 Content summary
-# -------------------------------------------------
 st.subheader("3) Content watched in this time range")
-
 content_window = (
     window_df.groupby(["content_label", "channel_name"])
     .agg(
@@ -489,9 +412,7 @@ content_window = (
     .reset_index()
     .sort_values(["est_watch_min", "requests"], ascending=False)
 )
-
 content_window = content_window[content_window["requests"] >= min_requests_per_content]
-
 st.dataframe(content_window, use_container_width=True, height=350, hide_index=True)
 
 fig_content = px.bar(
@@ -505,12 +426,7 @@ fig_content = px.bar(
 fig_content.update_layout(height=520, yaxis={"categoryorder": "total ascending"})
 st.plotly_chart(fig_content, use_container_width=True)
 
-
-# -------------------------------------------------
-# 4 Visited paths
-# -------------------------------------------------
 st.subheader("4) Where the user visited (paths/endpoints)")
-
 paths_window = (
     window_df.groupby("reqPath")
     .agg(
@@ -523,18 +439,11 @@ paths_window = (
     .sort_values(["requests", "est_watch_min"], ascending=False)
     .head(100)
 )
-
 st.dataframe(paths_window, use_container_width=True, height=350, hide_index=True)
 
-
-# -------------------------------------------------
-# 5 Session drill-down
-# -------------------------------------------------
 st.subheader("5) Session drill-down")
-
 session_options = sorted(window_df["session_key"].unique().tolist())
 selected_session = st.selectbox("Select session", session_options)
-
 session_window_df = window_df[window_df["session_key"] == selected_session].copy()
 
 s1, s2, s3, s4 = st.columns(4)
@@ -547,85 +456,44 @@ s2.metric(
 s3.metric("Unique Content", f"{session_window_df['content_label'].nunique():,}")
 s4.metric("Est. Watch Min", round(session_window_df["watch_min_est"].sum(), 2))
 
-session_cols = [
-    "event_time", "channel_name", "content_label", "reqPath",
-    "quality", "platform", "asn", "statusCode", "watch_min_est", "session_key"
-]
+session_cols = ["event_time", "channel_name", "content_label", "reqPath", "quality", "platform", "asn", "statusCode", "watch_min_est", "session_key"]
 session_cols = [c for c in session_cols if c in session_window_df.columns]
+st.dataframe(session_window_df[session_cols].sort_values("event_time"), use_container_width=True, height=350, hide_index=True)
 
-st.dataframe(
-    session_window_df[session_cols].sort_values("event_time"),
-    use_container_width=True,
-    height=350,
-    hide_index=True
-)
-
-
-# -------------------------------------------------
-# 6 Content switching
-# -------------------------------------------------
 st.subheader("6) Content switching moments")
-
 switch_df = window_df.sort_values("event_time").copy()
 switch_df["prev_content"] = switch_df["content_label"].shift(1)
 switches = switch_df[switch_df["content_label"] != switch_df["prev_content"]][
     ["event_time", "prev_content", "content_label", "channel_name", "session_key"]
 ].copy()
-
 st.dataframe(switches, use_container_width=True, height=250, hide_index=True)
 
-
-# -------------------------------------------------
-# 7 Likely watch starts
-# -------------------------------------------------
 st.subheader("7) Likely watch starts")
-
 watch_starts = (
     window_df.sort_values("event_time")
     .groupby("session_key")
     .first()
     .reset_index()[["session_key", "event_time", "content_label", "channel_name", "platform"]]
 )
-
 st.dataframe(watch_starts, use_container_width=True, height=250, hide_index=True)
 
-
-# -------------------------------------------------
-# 8 Network use
-# -------------------------------------------------
 if "asn" in window_df.columns:
     st.subheader("8) Network usage in selected window")
     asn_df = window_df["asn"].value_counts(dropna=False).reset_index()
     asn_df.columns = ["asn", "requests"]
     st.dataframe(asn_df, use_container_width=True, hide_index=True)
 
-
-# -------------------------------------------------
-# 9 Raw events
-# -------------------------------------------------
 st.subheader("9) Raw events in selected time range")
-
 raw_cols = [
     "event_time", "session_key", "channel_name", "content_label", "content_title",
     "platform", "device_type", "reqPath", "quality", "asn", "cliIP",
     "statusCode", "transferTimeMSec", "downloadTime", "queryStr"
 ]
 raw_cols = [c for c in raw_cols if c in window_df.columns]
+st.dataframe(window_df[raw_cols].sort_values("event_time"), use_container_width=True, height=450, hide_index=True)
 
-st.dataframe(
-    window_df[raw_cols].sort_values("event_time"),
-    use_container_width=True,
-    height=450,
-    hide_index=True
-)
-
-
-# -------------------------------------------------
-# Downloads
-# -------------------------------------------------
 st.markdown("---")
 d1, d2, d3 = st.columns(3)
-
 date_label = f"{start_date}_to_{end_date}"
 
 with d1:
@@ -635,7 +503,6 @@ with d1:
         file_name=f"user_window_{selected_device}_{date_label}.csv",
         mime="text/csv"
     )
-
 with d2:
     st.download_button(
         "Download session summary CSV",
@@ -643,7 +510,6 @@ with d2:
         file_name=f"user_sessions_{selected_device}_{date_label}.csv",
         mime="text/csv"
     )
-
 with d3:
     st.download_button(
         "Download content summary CSV",
@@ -652,10 +518,6 @@ with d3:
         mime="text/csv"
     )
 
-
-# -------------------------------------------------
-# Notes
-# -------------------------------------------------
 with st.expander("Notes / how to read this"):
     st.markdown("""
 - **device_id** is extracted from `queryStr`.
