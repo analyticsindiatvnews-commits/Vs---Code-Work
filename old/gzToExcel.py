@@ -37,7 +37,7 @@ def gz_to_excel(input_file, output_file):
         print(f"An error occurred: {e}")
 
 # --- Run ---
-input_gz = r"D:\VETO Logs\05\ak-870571-1775405618-686069-ds.gz" # Your file path
-output_xlsx = r"D:\VETO Logs\06.xlsx"
+input_gz = r"Z:\Veto Logs\22\ak-783418-1776874909-824045-ds.gz" # Your file path
+output_xlsx = r"D:\Vs - Code Work\01.xlsx"
 
 gz_to_excel(input_gz, output_xlsx)
