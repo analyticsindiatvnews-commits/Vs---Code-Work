@@ -357,20 +357,45 @@ k5.metric("Top Content", str(top_content)[:25])
 k6.metric("Device Type", str(top_device_type))
 
 with st.expander("Window summary", expanded=True):
-    s1, s2 = st.columns(2)
+    s1, s2, s3 = st.columns(3)
+
     with s1:
         st.write(f"**device_id:** {selected_device}")
         st.write(f"**Selected window:** {start_date} {start_time} to {end_date} {end_time}")
         st.write(f"**First event:** {first_seen}")
         st.write(f"**Last event:** {last_seen}")
+
     with s2:
         st.write(f"**Platform:** {top_platform}")
+        st.write(f"**Device Type:** {top_device_type}")
+
         if "asn" in window_df.columns and not window_df["asn"].mode().empty:
             st.write(f"**Most common ASN:** {window_df['asn'].mode().iloc[0]}")
+
         if "cliIP" in window_df.columns and not window_df["cliIP"].mode().empty:
             st.write(f"**Most common IP:** {window_df['cliIP'].mode().iloc[0]}")
+
         if "device_name_qs" in window_df.columns and not window_df["device_name_qs"].mode().empty:
             st.write(f"**Device name:** {window_df['device_name_qs'].mode().iloc[0]}")
+
+        if "UA" in window_df.columns and not window_df["UA"].mode().empty:
+            st.write(f"**UA:** {window_df['UA'].mode().iloc[0]}")
+
+    with s3:
+        if "city" in window_df.columns and not window_df["city"].mode().empty:
+            st.write(f"**City:** {window_df['city'].mode().iloc[0]}")
+
+        if "state" in window_df.columns and not window_df["state"].mode().empty:
+            st.write(f"**State:** {window_df['state'].mode().iloc[0]}")
+
+        if "country" in window_df.columns and not window_df["country"].mode().empty:
+            st.write(f"**Country:** {window_df['country'].mode().iloc[0]}")
+
+        if "billingRegion" in window_df.columns and not window_df["billingRegion"].mode().empty:
+            st.write(f"**Billing Region:** {window_df['billingRegion'].mode().iloc[0]}")
+
+        if "serverCountry" in window_df.columns and not window_df["serverCountry"].mode().empty:
+            st.write(f"**Server Country:** {window_df['serverCountry'].mode().iloc[0]}")
 
 st.markdown("---")
 st.subheader("1) What the user watched in the selected time range")
