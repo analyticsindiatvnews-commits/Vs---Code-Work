@@ -10,12 +10,12 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="User Behavior Dashboard - Parquet",
+    page_title="User Behavior Dashboard - Parquet Folder",
     page_icon="📺",
     layout="wide"
 )
 
-DEFAULT_PARQUET_PATH = r"Z:\Veto Logs Parquet\01.parquet"
+DEFAULT_PARQUET_FOLDER = r"Z:\Veto Logs Parquet"
 WATCH_GAP_CAP_SECONDS = 60
 
 
@@ -157,23 +157,33 @@ def get_conn():
     return con
 
 
-@st.cache_data(show_spinner="Scanning device IDs from parquet...", ttl=1800)
-def get_device_ids(parquet_path: str) -> list[str]:
+def parquet_glob(folder_path: str) -> str:
+    folder = Path(folder_path)
+    return str(folder / "*.parquet")
+
+
+@st.cache_data(show_spinner="Scanning device IDs...", ttl=1800)
+def get_device_ids_and_count(folder_path: str):
     con = get_conn()
+    parquet_pattern = parquet_glob(folder_path)
+
     query = f"""
     SELECT DISTINCT regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) AS device_id
-    FROM read_parquet('{parquet_path}')
+    FROM read_parquet('{parquet_pattern}')
     WHERE queryStr IS NOT NULL
       AND regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) <> ''
     ORDER BY 1
     """
     df = con.execute(query).df()
-    return df["device_id"].astype(str).tolist()
+    device_ids = df["device_id"].astype(str).tolist()
+    return device_ids, len(device_ids)
 
 
-@st.cache_data(show_spinner="Loading selected device from parquet...", ttl=600)
-def load_device_slice(parquet_path: str, selected_device: str, start_date, end_date) -> pd.DataFrame:
+@st.cache_data(show_spinner="Loading selected device...", ttl=600)
+def load_device_slice(folder_path: str, selected_device: str, start_date, end_date) -> pd.DataFrame:
     con = get_conn()
+    parquet_pattern = parquet_glob(folder_path)
+
     query = f"""
     SELECT
         queryStr,
@@ -193,7 +203,7 @@ def load_device_slice(parquet_path: str, selected_device: str, start_date, end_d
         regexp_extract(queryStr, '(?:^|&)platform=([^&]+)', 1) AS platform,
         regexp_extract(queryStr, '(?:^|&)device=([^&]+)', 1) AS device_name_qs,
         regexp_extract(queryStr, '(?:^|&)category_name=([^&]+)', 1) AS category_name
-    FROM read_parquet('{parquet_path}')
+    FROM read_parquet('{parquet_pattern}')
     WHERE regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) = ?
       AND to_timestamp(TRY_CAST(reqTimeSec AS BIGINT))::DATE BETWEEN ? AND ?
     ORDER BY TRY_CAST(reqTimeSec AS BIGINT)
@@ -245,24 +255,24 @@ def enrich_df(df: pd.DataFrame) -> pd.DataFrame:
 # =================================================
 with st.sidebar:
     st.header("Settings")
-    parquet_path = st.text_input("Parquet file path", value=DEFAULT_PARQUET_PATH)
+    parquet_folder = st.text_input("Parquet folder path", value=DEFAULT_PARQUET_FOLDER)
     session_gap_minutes = st.number_input("Session gap (minutes)", min_value=5, max_value=180, value=20, step=5)
-    load_btn = st.button("Load Dashboard", type="primary")
 
-if not load_btn:
-    st.info("Enter parquet path and click Load Dashboard.")
+folder = Path(parquet_folder)
+if not folder.exists() or not folder.is_dir():
+    st.error(f"Folder not found or not a folder: {parquet_folder}")
     st.stop()
 
-parquet_file = Path(parquet_path)
-if not parquet_file.exists():
-    st.error(f"File not found: {parquet_path}")
+parquet_files = list(folder.glob("*.parquet"))
+if not parquet_files:
+    st.error("No parquet files found in this folder.")
     st.stop()
 
 # =================================================
-# Device selector
+# Device scan
 # =================================================
 try:
-    device_ids = get_device_ids(parquet_path)
+    device_ids, unique_device_count = get_device_ids_and_count(parquet_folder)
 except Exception as e:
     st.error(f"Could not scan device IDs: {e}")
     st.stop()
@@ -271,11 +281,16 @@ if not device_ids:
     st.error("No device_id found inside queryStr.")
     st.stop()
 
-st.title("📺 User Behavior Dashboard - Parquet")
+st.title("📺 User Behavior Dashboard - Parquet Folder")
+
+m1, m2 = st.columns(2)
+m1.metric("Parquet files", f"{len(parquet_files):,}")
+m2.metric("Unique device_ids", f"{unique_device_count:,}")
 
 selected_device = st.selectbox("Select device_id", device_ids)
 
-tmp_df = load_device_slice(parquet_path, selected_device, "1970-01-01", "2100-01-01")
+# initial slice for date boundaries
+tmp_df = load_device_slice(parquet_folder, selected_device, "1970-01-01", "2100-01-01")
 tmp_df = enrich_df(tmp_df)
 
 if tmp_df.empty:
@@ -304,7 +319,7 @@ with c2:
 with c3:
     min_requests_per_content = st.number_input("Min requests per content", min_value=1, max_value=1000, value=1, step=1)
 
-device_df = load_device_slice(parquet_path, selected_device, start_date, end_date)
+device_df = load_device_slice(parquet_folder, selected_device, start_date, end_date)
 device_df = enrich_df(device_df)
 
 device_df = build_sessions(device_df, gap_minutes=session_gap_minutes)
@@ -414,116 +429,3 @@ content_window = (
 )
 content_window = content_window[content_window["requests"] >= min_requests_per_content]
 st.dataframe(content_window, use_container_width=True, height=350, hide_index=True)
-
-fig_content = px.bar(
-    content_window.head(15),
-    x="est_watch_min",
-    y="content_label",
-    color="channel_name",
-    orientation="h",
-    title="Top content by estimated watch minutes"
-)
-fig_content.update_layout(height=520, yaxis={"categoryorder": "total ascending"})
-st.plotly_chart(fig_content, use_container_width=True)
-
-st.subheader("4) Where the user visited (paths/endpoints)")
-paths_window = (
-    window_df.groupby("reqPath")
-    .agg(
-        requests=("reqPath", "size"),
-        first_seen=("event_time", "min"),
-        last_seen=("event_time", "max"),
-        est_watch_min=("watch_min_est", "sum")
-    )
-    .reset_index()
-    .sort_values(["requests", "est_watch_min"], ascending=False)
-    .head(100)
-)
-st.dataframe(paths_window, use_container_width=True, height=350, hide_index=True)
-
-st.subheader("5) Session drill-down")
-session_options = sorted(window_df["session_key"].unique().tolist())
-selected_session = st.selectbox("Select session", session_options)
-session_window_df = window_df[window_df["session_key"] == selected_session].copy()
-
-s1, s2, s3, s4 = st.columns(4)
-s1.metric("Session Rows", f"{len(session_window_df):,}")
-s2.metric(
-    "Session Duration Min",
-    round((session_window_df["event_time"].max() - session_window_df["event_time"].min()).total_seconds() / 60, 2)
-    if len(session_window_df) > 0 else 0
-)
-s3.metric("Unique Content", f"{session_window_df['content_label'].nunique():,}")
-s4.metric("Est. Watch Min", round(session_window_df["watch_min_est"].sum(), 2))
-
-session_cols = ["event_time", "channel_name", "content_label", "reqPath", "quality", "platform", "asn", "statusCode", "watch_min_est", "session_key"]
-session_cols = [c for c in session_cols if c in session_window_df.columns]
-st.dataframe(session_window_df[session_cols].sort_values("event_time"), use_container_width=True, height=350, hide_index=True)
-
-st.subheader("6) Content switching moments")
-switch_df = window_df.sort_values("event_time").copy()
-switch_df["prev_content"] = switch_df["content_label"].shift(1)
-switches = switch_df[switch_df["content_label"] != switch_df["prev_content"]][
-    ["event_time", "prev_content", "content_label", "channel_name", "session_key"]
-].copy()
-st.dataframe(switches, use_container_width=True, height=250, hide_index=True)
-
-st.subheader("7) Likely watch starts")
-watch_starts = (
-    window_df.sort_values("event_time")
-    .groupby("session_key")
-    .first()
-    .reset_index()[["session_key", "event_time", "content_label", "channel_name", "platform"]]
-)
-st.dataframe(watch_starts, use_container_width=True, height=250, hide_index=True)
-
-if "asn" in window_df.columns:
-    st.subheader("8) Network usage in selected window")
-    asn_df = window_df["asn"].value_counts(dropna=False).reset_index()
-    asn_df.columns = ["asn", "requests"]
-    st.dataframe(asn_df, use_container_width=True, hide_index=True)
-
-st.subheader("9) Raw events in selected time range")
-raw_cols = [
-    "event_time", "session_key", "channel_name", "content_label", "content_title",
-    "platform", "device_type", "reqPath", "quality", "asn", "cliIP",
-    "statusCode", "transferTimeMSec", "downloadTime", "queryStr"
-]
-raw_cols = [c for c in raw_cols if c in window_df.columns]
-st.dataframe(window_df[raw_cols].sort_values("event_time"), use_container_width=True, height=450, hide_index=True)
-
-st.markdown("---")
-d1, d2, d3 = st.columns(3)
-date_label = f"{start_date}_to_{end_date}"
-
-with d1:
-    st.download_button(
-        "Download window raw events CSV",
-        data=window_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"user_window_{selected_device}_{date_label}.csv",
-        mime="text/csv"
-    )
-with d2:
-    st.download_button(
-        "Download session summary CSV",
-        data=sess_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"user_sessions_{selected_device}_{date_label}.csv",
-        mime="text/csv"
-    )
-with d3:
-    st.download_button(
-        "Download content summary CSV",
-        data=content_window.to_csv(index=False).encode("utf-8"),
-        file_name=f"user_content_{selected_device}_{date_label}.csv",
-        mime="text/csv"
-    )
-
-with st.expander("Notes / how to read this"):
-    st.markdown("""
-- **device_id** is extracted from `queryStr`.
-- **Date range + time range** lets you inspect recurring behavior across multiple days.
-- **Visited paths** means the exact request paths/endpoints hit by this user/device.
-- **Content watched** is inferred from `content_title`, `channel`, and `reqPath`.
-- **Estimated watch minutes** are based on time gaps between events and are capped to reduce fake inflation.
-- This is strong behavioral estimation, not perfect player telemetry.
-""")
