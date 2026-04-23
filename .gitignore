@@ -19,3 +19,8 @@ __pycache__/
 
 # Optional: screenshots / design refs
 SS/
+
+# CSV / Excel
+*.csv
+*.xlsx
+*.xls
