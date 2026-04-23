@@ -2,8 +2,8 @@ import pyarrow.parquet as pq
 import pyarrow as pa
 from pathlib import Path
 
-input_folder = Path(r"Z:\Veto Logs\21_parquet")
-output_file = r"Z:\Veto Logs Parquet\21.parquet"
+input_folder = Path(r"Z:\Veto Logs\22_parquet")
+output_file = r"Z:\Veto Logs Parquet\22.parquet"
 
 writer = None
 
