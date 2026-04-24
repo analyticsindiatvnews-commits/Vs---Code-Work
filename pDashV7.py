@@ -675,7 +675,7 @@ def ub_format_geo_summary(geo: dict) -> dict:
 
 
 @st.cache_resource
-def ub_get_conn():
+def get_db_conn():
     con = duckdb.connect(database=":memory:")
     con.execute("PRAGMA threads=4")
     return con
@@ -683,10 +683,10 @@ def ub_get_conn():
 
 @st.cache_data(show_spinner="Scanning device IDs ...", ttl=1800)
 def ub_get_device_ids(parquet_glob: str, qs_col: str) -> list:
-    con = ub_get_conn()
+    con = get_db_conn()
     query = f"""
     SELECT DISTINCT regexp_extract({qs_col}, '(?:^|&)device_id=([^&]+)', 1) AS device_id
-    FROM read_parquet({parquet_glob!r})
+    FROM dataset
     WHERE {qs_col} IS NOT NULL
       AND regexp_extract({qs_col}, '(?:^|&)device_id=([^&]+)', 1) <> ''
     ORDER BY 1
@@ -700,7 +700,7 @@ def ub_get_device_ids(parquet_glob: str, qs_col: str) -> list:
 
 @st.cache_data(show_spinner="Loading device data ...", ttl=600)
 def ub_load_device(parquet_glob: str, device_id: str, start_date: str, end_date: str, col_map: dict) -> pd.DataFrame:
-    con  = ub_get_conn()
+    con  = get_db_conn()
     qs   = _cm(col_map, "queryStr")
     ts   = _cm(col_map, "reqTimeSec")
     path = _cm(col_map, "reqPath")
@@ -740,7 +740,7 @@ def ub_load_device(parquet_glob: str, device_id: str, start_date: str, end_date:
         regexp_extract({qs}, '(?:^|&)platform=([^&]+)',       1) AS platform,
         regexp_extract({qs}, '(?:^|&)device=([^&]+)',         1) AS device_name_qs,
         regexp_extract({qs}, '(?:^|&)category_name=([^&]+)',  1) AS category_name
-    FROM read_parquet({parquet_glob!r})
+    FROM dataset
     WHERE regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1) = ?
       AND to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN ? AND ?
     ORDER BY TRY_CAST({ts} AS BIGINT)
@@ -792,14 +792,14 @@ def ub_enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def ub_get_device_date_range(parquet_glob: str, device_id: str, col_map: dict):
-    con = ub_get_conn()
+    con = get_db_conn()
     qs = _cm(col_map, "queryStr")
     ts = _cm(col_map, "reqTimeSec")
     query = f"""
     SELECT
         MIN(to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE) AS min_date,
         MAX(to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE) AS max_date
-    FROM read_parquet({parquet_glob!r})
+    FROM dataset
     WHERE regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1) = ?
     """
     try:
@@ -919,13 +919,13 @@ def ub_build_pdf_report(window_df: pd.DataFrame, sess_df: pd.DataFrame, content_
 
 @st.cache_data(show_spinner="Loading global behavior coverage ...", ttl=900)
 def gb_get_coverage(parquet_glob: list, col_map: dict, start_date: str, end_date: str) -> dict:
-    con = ub_get_conn()
+    con = get_db_conn()
     qs   = _cm(col_map, "queryStr")
     ts   = _cm(col_map, "reqTimeSec")
     query = f"""
     WITH base AS (
         SELECT {qs} AS queryStr, TRY_CAST({ts} AS BIGINT) AS req_ts
-        FROM read_parquet({parquet_glob!r})
+        FROM dataset
         WHERE to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN ? AND ?
     )
     SELECT
@@ -952,7 +952,7 @@ def gb_get_coverage(parquet_glob: list, col_map: dict, start_date: str, end_date
 
 @st.cache_data(show_spinner="Loading clean channel master ...", ttl=900)
 def gb_get_channel_master(parquet_glob: list, col_map: dict, start_date: str, end_date: str, limit_rows: int = 500) -> pd.DataFrame:
-    con = ub_get_conn()
+    con = get_db_conn()
     cte = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, "Default")
     query = cte + f"""
     SELECT
@@ -1010,7 +1010,7 @@ def gb_behavior_cte(parquet_glob: list, col_map: dict, start_date: str, end_date
             regexp_extract({qs}, '(?:^|&)platform=([^&]+)', 1)       AS platform,
             regexp_extract({qs}, '(?:^|&)device=([^&]+)', 1)         AS device_name_qs,
             regexp_extract({qs}, '(?:^|&)category_name=([^&]+)', 1)  AS category_name
-        FROM read_parquet({parquet_glob!r})
+        FROM dataset
         WHERE {qs} IS NOT NULL
           AND {qs} LIKE '%session_id=%'
           AND to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN DATE '{start_date}' AND DATE '{end_date}'
@@ -1047,7 +1047,7 @@ def gb_behavior_cte(parquet_glob: list, col_map: dict, start_date: str, end_date
 
 @st.cache_data(show_spinner="Loading global behavior day-part data ...", ttl=900)
 def gb_get_daypart_top(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> pd.DataFrame:
-    con = ub_get_conn()
+    con = get_db_conn()
     entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
     query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode) + f"""
     SELECT *
@@ -1070,7 +1070,7 @@ def gb_get_daypart_top(parquet_glob: list, col_map: dict, start_date: str, end_d
 
 @st.cache_data(show_spinner="Loading global stickiness data ...", ttl=900)
 def gb_get_stickiness(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> pd.DataFrame:
-    con = ub_get_conn()
+    con = get_db_conn()
     entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
     query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode) + f"""
     , seq AS (
@@ -1113,7 +1113,7 @@ def gb_get_stickiness(parquet_glob: list, col_map: dict, start_date: str, end_da
 
 @st.cache_data(show_spinner="Loading global retention data ...", ttl=900)
 def gb_get_retention_buckets(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> pd.DataFrame:
-    con = ub_get_conn()
+    con = get_db_conn()
     entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
     query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode) + f"""
     , seq AS (
@@ -1160,7 +1160,7 @@ def gb_get_retention_buckets(parquet_glob: list, col_map: dict, start_date: str,
 
 @st.cache_data(show_spinner="Loading switching behavior data ...", ttl=900)
 def gb_get_switching(parquet_glob: list, col_map: dict, start_date: str, end_date: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    con = ub_get_conn()
+    con = get_db_conn()
     cte = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode)
     channel_expr = "channel_name_raw" if channel_mode == "Raw" else "channel_name"
     trans_query = cte + f"""

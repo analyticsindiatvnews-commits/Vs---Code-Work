@@ -253,74 +253,55 @@ def build_mask(tbl, filters: dict):
 
 @st.cache_data(show_spinner="📋 Reading column schema from parquet files ...")
 def load_schema(folder_key: str):
-    folders  = folder_key.split("|")
-    files    = collect_files(folders)
-    all_cols = {}
-    seen     = set()
-    for f in files:
-        fp = str(f.parent)
-        if fp in seen:
-            continue
-        seen.add(fp)
-        try:
-            schema = pq.read_schema(f)
-            for name in schema.names:
-                if name not in all_cols:
-                    all_cols[name] = str(schema.field(name).type)
-        except Exception:
-            continue
-    return list(all_cols.keys()), all_cols
-
+    con = get_db_conn()
+    files = get_files_list(folder_key)
+    if not files: return [], {}
+    
+    # DuckDB gets schema from parquet metadata instantly
+    schema_df = con.execute(f"DESCRIBE SELECT * FROM dataset").df()
+    columns = schema_df["column_name"].tolist()
+    col_types = dict(zip(schema_df["column_name"], schema_df["column_type"]))
+    return columns, col_types
 
 @st.cache_data(show_spinner="🔢 Counting total rows across all files ...")
 def count_stats(folder_key: str):
-    folders    = folder_key.split("|")
-    files      = collect_files(folders)
-    total_rows = 0
-    for f in files:
-        try:
-            total_rows += pq.read_metadata(f).num_rows
-        except Exception:
-            pass
+    con = get_db_conn()
+    files = get_files_list(folder_key)
+    if not files: return 0, 0, 0
+    
+    # DuckDB will use Parquet footer metadata to count rows without reading data
+    total_rows = con.execute(f"SELECT COUNT(*) FROM dataset").fetchone()[0]
     n_folders = len({str(Path(f).parent) for f in files})
     return len(files), total_rows, n_folders
 
 
 def unique_values(folder_key: str, column: str) -> pd.DataFrame:
-    files = collect_files(folder_key.split("|"))
-    file_cols = get_file_columns(folder_key)
-    total = len(files)
-    counter = {}
+    con = get_db_conn()
+    files = get_files_list(folder_key)
+    if not files: return pd.DataFrame()
 
-    bar = st.progress(0, text=f"Scanning unique values ... 0 / {total:,} files")
-    for i, f in enumerate(files):
-        pct = int((i + 1) / total * 100) if total else 100
-        bar.progress(pct, text=f"Scanning unique values ... {i+1:,} / {total:,} files")
+    with st.spinner(f"⚡ Counting unique values for '{column}' using DuckDB ..."):
+        # Safe quoting for column names
+        col_safe = f'"{column}"'
+        query = f"""
+        SELECT 
+            CAST({col_safe} AS VARCHAR) AS value, 
+            COUNT(*) AS count
+        FROM dataset
+        WHERE {col_safe} IS NOT NULL
+        GROUP BY 1
+        ORDER BY 2 DESC
+        """
         try:
-            if column not in file_cols.get(str(f), set()):
-                continue
-
-            pf = pq.ParquetFile(f)
-            for batch in pf.iter_batches(columns=[column], batch_size=50000):
-                arr = pa.array(batch.column(0)).cast(pa.string())
-                vc = pc.value_counts(arr)
-                if vc is None:
-                    continue
-                for item in vc:
-                    val = item["values"].as_py()
-                    val = str(val) if val is not None else "(null)"
-                    counter[val] = counter.get(val, 0) + item["counts"].as_py()
-        except Exception:
-            continue
-
-    bar.empty()
-    if not counter:
-        return pd.DataFrame(columns=["value", "count", "% of rows"])
-    df = pd.DataFrame(list(counter.items()), columns=["value", "count"])
-    df = df.sort_values("count", ascending=False).reset_index(drop=True)
-    total_rows = df["count"].sum()
-    df["% of rows"] = (df["count"] / total_rows * 100).round(2)
-    return df
+            df = con.execute(query).df()
+            total_rows = df["count"].sum()
+            df["% of rows"] = (df["count"] / total_rows * 100).round(2) if total_rows > 0 else 0
+            # Replace empty strings or pandas NAs to match your old logic
+            df["value"] = df["value"].replace("", "(empty)").fillna("(null)")
+            return df
+        except Exception as e:
+            st.error(f"Error reading unique values: {e}")
+            return pd.DataFrame(columns=["value", "count", "% of rows"])
 
 
 def apply_all_filters(tbl, filters: dict, dual: dict):
@@ -360,66 +341,55 @@ def run_query(
     max_rows=None,
     progress_label: str = "Scanning files",
 ) -> pd.DataFrame:
-    files = collect_files(folder_key.split("|"))
-    file_cols = get_file_columns(folder_key)
-    total = len(files)
-    frames = []
-    collected = 0
+    con = get_db_conn()
+    files = get_files_list(folder_key)
+    if not files: return pd.DataFrame()
 
-    bar = st.progress(0, text=f"{progress_label} ... 0 / {total:,} files")
-    info = st.empty()
+    # 1. Build SELECT clause
+    cols_safe = ", ".join([f'"{c}"' for c in sel_cols])
+    
+    # 2. Build WHERE clauses
+    where_clauses = []
+    params = []
+    
+    # Standard AND filters
+    for col, vals in filters.items():
+        if not vals: continue
+        placeholders = ", ".join(["?" for _ in vals])
+        where_clauses.append(f'"{col}" IN ({placeholders})')
+        params.extend([str(v) for v in vals])
+        
+    # Dual OR filter
+    if dual and (dual.get("vals_a") or dual.get("vals_b")):
+        dual_parts = []
+        if dual.get("vals_a"):
+            p_a = ", ".join(["?" for _ in dual["vals_a"]])
+            dual_parts.append(f'"{dual["col_a"]}" IN ({p_a})')
+            params.extend([str(v) for v in dual["vals_a"]])
+        if dual.get("vals_b"):
+            p_b = ", ".join(["?" for _ in dual["vals_b"]])
+            dual_parts.append(f'"{dual["col_b"]}" IN ({p_b})')
+            params.extend([str(v) for v in dual["vals_b"]])
+            
+        if dual_parts:
+            where_clauses.append(f"({' OR '.join(dual_parts)})")
 
-    needed_cols = list(dict.fromkeys(
-        list(sel_cols)
-        + list(filters.keys())
-        + [dual.get("col_a"), dual.get("col_b")]
-    ))
-    needed_cols = [c for c in needed_cols if c]
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    limit_sql = f" LIMIT {int(max_rows)}" if max_rows else ""
 
-    for i, f in enumerate(files):
-        if max_rows is not None and collected >= max_rows:
-            break
-
-        pct = int((i + 1) / total * 100) if total else 100
-        bar.progress(pct, text=f"{progress_label} ... {i+1:,} / {total:,} files  |  {collected:,} rows found")
+    query = f"""
+    SELECT {cols_safe} 
+    FROM dataset
+    WHERE {where_sql}
+    {limit_sql}
+    """
+    
+    with st.spinner(f"⚡ {progress_label} via DuckDB ..."):
         try:
-            available_in_file = file_cols.get(str(f), set())
-            avail = [c for c in needed_cols if c in available_in_file]
-            if not any(c in available_in_file for c in sel_cols):
-                continue
-            if not avail:
-                continue
-
-            pf = pq.ParquetFile(f)
-            for batch in pf.iter_batches(columns=avail, batch_size=50000):
-                tbl = pa.Table.from_batches([batch])
-                tbl = apply_all_filters(tbl, filters, dual)
-                if len(tbl) == 0:
-                    continue
-
-                present_sel_cols = [c for c in sel_cols if c in tbl.schema.names]
-                if not present_sel_cols:
-                    continue
-                tbl = tbl.select(present_sel_cols)
-
-                need = (max_rows - collected) if max_rows is not None else len(tbl)
-                if need <= 0:
-                    break
-
-                chunk = tbl.slice(0, need).to_pandas()
-                chunk.insert(0, "_folder", f.parent.name)
-                frames.append(chunk)
-                collected += len(chunk)
-
-                if max_rows is not None and collected >= max_rows:
-                    break
-        except Exception:
-            continue
-
-    bar.empty()
-    info.empty()
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
+            return con.execute(query, params).df()
+        except Exception as e:
+            st.error(f"Query error: {e}")
+            return pd.DataFrame()
 
 # ─────────────────────────────────────────────
 # Query String helpers  (NEW)
@@ -448,32 +418,32 @@ def parse_qrystr_column(df: pd.DataFrame, value_col: str, count_col: str = "coun
 def load_qrystr_from_parquet(
     folder_key: str,
     qrystr_col: str,
-    progress_label: str = "Loading query strings",
 ) -> pd.DataFrame:
+    # Get distinct strings and counts via DuckDB first, THEN parse in Python.
+    con = get_db_conn()
+    files = get_files_list(folder_key)
+    query = f"""
+    SELECT CAST("{qrystr_col}" AS VARCHAR) AS _raw_val, COUNT(*) AS count
+    FROM dataset
+    WHERE "{qrystr_col}" IS NOT NULL
+    GROUP BY 1
     """
-    Read the qrystr column from parquet files, return a flat parsed DataFrame.
-    Each parquet row becomes one parsed record; _count=1 for raw parquet rows.
-    """
-    files = collect_files(folder_key.split("|"))
-    file_cols = get_file_columns(folder_key)
-    total = len(files)
-    frames = []
-
-    bar = st.progress(0, text=f"{progress_label} ... 0 / {total:,} files")
-    for i, f in enumerate(files):
-        pct = int((i + 1) / total * 100) if total else 100
-        bar.progress(pct, text=f"{progress_label} ... {i+1:,} / {total:,} files")
+    raw_df = con.execute(query).df()
+    
+    # Now loop through the *deduplicated* list in Python
+    records = []
+    for _, row in raw_df.iterrows():
+        raw_val = str(row["_raw_val"])
+        cnt = row["count"]
         try:
-            if qrystr_col not in file_cols.get(str(f), set()):
-                continue
-            for parsed_batch_df in _iter_query_string_batches(f, qrystr_col, batch_size=50000):
-                frames.append(parsed_batch_df)
+            parsed = dict(urllib.parse.parse_qsl(raw_val, keep_blank_values=True))
         except Exception:
-            continue
-    bar.empty()
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+            parsed = {}
+        parsed["_raw"] = raw_val
+        parsed["_count"] = cnt
+        records.append(parsed)
+        
+    return pd.DataFrame(records).fillna("")
 
 
 
@@ -725,18 +695,28 @@ def ub_format_geo_summary(geo: dict) -> dict:
 
 
 @st.cache_resource
-def ub_get_conn():
+def get_db_conn():
     con = duckdb.connect(database=":memory:")
     con.execute("PRAGMA threads=4")
+    con.execute("PRAGMA enable_object_cache") 
     return con
+
+@st.cache_data(show_spinner=False)
+def setup_base_view(folder_key: str):
+    """Registers a single view over the files so DuckDB reads metadata exactly ONCE."""
+    con = get_db_conn()
+    files = [str(f) for f in collect_files(folder_key.split("|"))]
+    if files:
+        con.execute(f"CREATE OR REPLACE VIEW dataset AS SELECT * FROM dataset")
+    return True
 
 
 @st.cache_data(show_spinner="Scanning device IDs ...", ttl=1800)
 def ub_get_device_ids(parquet_glob: str, qs_col: str) -> list:
-    con = ub_get_conn()
+    con = get_db_conn()
     query = f"""
     SELECT DISTINCT regexp_extract({qs_col}, '(?:^|&)device_id=([^&]+)', 1) AS device_id
-    FROM read_parquet({parquet_glob!r})
+    FROM dataset
     WHERE {qs_col} IS NOT NULL
       AND regexp_extract({qs_col}, '(?:^|&)device_id=([^&]+)', 1) <> ''
     ORDER BY 1
@@ -750,7 +730,7 @@ def ub_get_device_ids(parquet_glob: str, qs_col: str) -> list:
 
 @st.cache_data(show_spinner="Loading device data ...", ttl=600)
 def ub_load_device(parquet_glob: str, device_id: str, start_date: str, end_date: str, col_map: dict) -> pd.DataFrame:
-    con  = ub_get_conn()
+    con  = get_db_conn()
     qs   = _cm(col_map, "queryStr")
     ts   = _cm(col_map, "reqTimeSec")
     path = _cm(col_map, "reqPath")
@@ -791,7 +771,7 @@ def ub_load_device(parquet_glob: str, device_id: str, start_date: str, end_date:
         regexp_extract({qs}, '(?:^|&)platform=([^&]+)',       1) AS platform,
         regexp_extract({qs}, '(?:^|&)device=([^&]+)',         1) AS device_name_qs,
         regexp_extract({qs}, '(?:^|&)category_name=([^&]+)',  1) AS category_name
-    FROM read_parquet({parquet_glob!r})
+    FROM dataset
     WHERE regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1) = ?
       AND to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN ? AND ?
     ORDER BY TRY_CAST({ts} AS BIGINT)
@@ -855,14 +835,14 @@ def ub_enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def ub_get_device_date_range(parquet_glob: str, device_id: str, col_map: dict):
-    con = ub_get_conn()
+    con = get_db_conn()
     qs = _cm(col_map, "queryStr")
     ts = _cm(col_map, "reqTimeSec")
     query = f"""
     SELECT
         MIN(to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE) AS min_date,
         MAX(to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE) AS max_date
-    FROM read_parquet({parquet_glob!r})
+    FROM dataset
     WHERE regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1) = ?
     """
     try:
@@ -982,13 +962,13 @@ def ub_build_pdf_report(window_df: pd.DataFrame, sess_df: pd.DataFrame, content_
 
 @st.cache_data(show_spinner="Loading global behavior coverage ...", ttl=900)
 def gb_get_coverage(parquet_glob: list, col_map: dict, start_date: str, end_date: str) -> dict:
-    con = ub_get_conn()
+    con = get_db_conn()
     qs   = _cm(col_map, "queryStr")
     ts   = _cm(col_map, "reqTimeSec")
     query = f"""
     WITH base AS (
         SELECT {qs} AS queryStr, TRY_CAST({ts} AS BIGINT) AS req_ts
-        FROM read_parquet({parquet_glob!r})
+        FROM dataset
         WHERE to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN ? AND ?
     )
     SELECT
@@ -1016,7 +996,7 @@ def gb_get_coverage(parquet_glob: list, col_map: dict, start_date: str, end_date
 @st.cache_data(show_spinner="Loading pure channel master ...", ttl=900)
 def gb_get_channel_master_smart(parquet_glob: list, col_map: dict, start_date: str, end_date: str, top_n: int = 5000) -> pd.DataFrame:
     """Get raw channel/platform/device combos, then clean channels in Python exactly like User Behavior."""
-    con = ub_get_conn()
+    con = get_db_conn()
     qs = _cm(col_map, "queryStr")
     ts = _cm(col_map, "reqTimeSec")
     path = _cm(col_map, "reqPath")
@@ -1031,7 +1011,7 @@ def gb_get_channel_master_smart(parquet_glob: list, col_map: dict, start_date: s
         COUNT(*) AS requests,
         COUNT(DISTINCT regexp_extract({qs}, '(?:^|&)session_id=([^&]+)', 1)) AS sessions,
         COUNT(DISTINCT regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1)) AS devices
-    FROM read_parquet({parquet_glob!r})
+    FROM dataset
     WHERE {qs} IS NOT NULL
       AND {qs} LIKE '%session_id=%'
       AND to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN DATE '{start_date}' AND DATE '{end_date}'
@@ -1096,7 +1076,7 @@ def gb_behavior_cte(parquet_glob: list, col_map: dict, start_date: str, end_date
             regexp_extract({qs}, '(?:^|&)platform=([^&]+)', 1)       AS platform,
             regexp_extract({qs}, '(?:^|&)device=([^&]+)', 1)         AS device_name_qs,
             regexp_extract({qs}, '(?:^|&)category_name=([^&]+)', 1)  AS category_name
-        FROM read_parquet({parquet_glob!r})
+        FROM dataset
         WHERE {qs} IS NOT NULL
           AND {qs} LIKE '%session_id=%'
           AND to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN DATE '{start_date}' AND DATE '{end_date}'
@@ -1124,10 +1104,12 @@ def gb_behavior_cte(parquet_glob: list, col_map: dict, start_date: str, end_date
 
 
 @st.cache_data(show_spinner="Loading global behavior day-part data ...", ttl=900)
-def gb_get_daypart_top(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> pd.DataFrame:
-    con = ub_get_conn()
+def gb_get_daypart_top(col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> pd.DataFrame:
+    con = get_db_conn()
     entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
-    query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode) + f"""
+    
+    # We query the temp table directly! No more CTE string prepending.
+    query = f"""
     SELECT *
     FROM (
         SELECT
@@ -1137,7 +1119,7 @@ def gb_get_daypart_top(parquet_glob: list, col_map: dict, start_date: str, end_d
             COUNT(DISTINCT session_id) AS sessions,
             COUNT(DISTINCT device_id) AS devices,
             ROW_NUMBER() OVER (PARTITION BY day_part ORDER BY COUNT(DISTINCT session_id) DESC, COUNT(*) DESC) AS rn
-        FROM enriched
+        FROM global_enriched
         GROUP BY 1, 2
     ) q
     WHERE rn <= {int(top_n)}
@@ -1148,7 +1130,7 @@ def gb_get_daypart_top(parquet_glob: list, col_map: dict, start_date: str, end_d
 
 @st.cache_data(show_spinner="Loading global stickiness data ...", ttl=900)
 def gb_get_stickiness(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> pd.DataFrame:
-    con = ub_get_conn()
+    con = get_db_conn()
     entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
     query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode) + f"""
     , seq AS (
@@ -1191,7 +1173,7 @@ def gb_get_stickiness(parquet_glob: list, col_map: dict, start_date: str, end_da
 
 @st.cache_data(show_spinner="Loading global retention data ...", ttl=900)
 def gb_get_retention_buckets(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> pd.DataFrame:
-    con = ub_get_conn()
+    con = get_db_conn()
     entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
     query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode) + f"""
     , seq AS (
@@ -1238,7 +1220,7 @@ def gb_get_retention_buckets(parquet_glob: list, col_map: dict, start_date: str,
 
 @st.cache_data(show_spinner="Loading switching behavior data ...", ttl=900)
 def gb_get_switching(parquet_glob: list, col_map: dict, start_date: str, end_date: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    con = ub_get_conn()
+    con = get_db_conn()
     cte = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode)
     channel_expr = "channel_name_raw" if channel_mode == "Raw" else "channel_name"
     trans_query = cte + f"""
@@ -1470,6 +1452,7 @@ if not valid_folders:
 # ─────────────────────────────────────────────
 
 folder_key             = "|".join(sorted(valid_folders))
+setup_base_view(folder_key)
 columns, col_types     = load_schema(folder_key)
 n_files, n_rows, n_fol = count_stats(folder_key)
 

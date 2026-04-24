@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 # ---------------- CONFIG ----------------
 
-FOLDER_PATH = r'D:\VETO Logs\05'
+FOLDER_PATH = r'Z:\Veto Logs\23'
 PLACEHOLDERS = {"-", "^"}
 
 # ---------------- CORE WORKER ----------------

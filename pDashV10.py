@@ -11,15 +11,24 @@ import time
 import threading
 import urllib.parse
 import re
+import io
 from pathlib import Path
 from datetime import time as dtime
 from urllib.parse import unquote_plus
 
 import pandas as pd
 import pyarrow as pa
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
 import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
 
 try:
     import duckdb
@@ -481,6 +490,76 @@ def ub_extract_channel_from_path(path_s: pd.Series) -> pd.Series:
     return path_s.astype(str).str.extract(r"(vglive-sk-\d+)", expand=False)
 
 
+DEVICE_SUFFIX_TOKENS = {
+    "firetv", "firestick", "fireos",
+    "androidtv", "android",
+    "web", "webos",
+    "lg", "lgtv",
+    "apple", "appletv", "ios", "iphone", "ipad",
+    "samsung", "samsungtv", "tizen",
+    "roku", "mi", "mitv", "xiaomi",
+    "sony", "bravia",
+    "id", "tv", "mobile", "phone", "tablet",
+}
+
+
+def _norm_token(x: str) -> str:
+    if pd.isna(x):
+        return ""
+    s = str(x).strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
+def _expand_device_tokens(*values) -> set:
+    expanded = set(DEVICE_SUFFIX_TOKENS)
+    for val in values:
+        tok = _norm_token(val)
+        if not tok:
+            continue
+        expanded.add(tok)
+        if tok.endswith("tv") and len(tok) > 2:
+            expanded.add(tok[:-2])
+        if tok == "androidtv":
+            expanded.add("android")
+        if tok == "appletv":
+            expanded.add("apple")
+        if tok == "lgtv":
+            expanded.add("lg")
+        if tok == "samsungtv":
+            expanded.add("samsung")
+        if tok == "firestick":
+            expanded.add("firetv")
+    return expanded
+
+
+def normalize_channel_name_smart(channel_raw: str, platform: str = "", device_name: str = "") -> str:
+    """Return canonical pure channel name for analytics.
+
+    Removes trailing device/platform tokens after underscores and then
+    case-folds the channel so IndiaTV and indiatv are treated as the same
+    business channel. Raw values are still kept separately in master exports.
+    """
+    if pd.isna(channel_raw):
+        return "unknown"
+    raw = str(channel_raw).strip()
+    if raw.lower() in {"", "nan", "none", "null", "(null)"}:
+        return "unknown"
+    raw = re.sub(r"\s*_\s*", "_", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+
+    clean = raw
+    tokens = _expand_device_tokens(platform, device_name)
+    while "_" in clean:
+        base, suffix = clean.rsplit("_", 1)
+        suffix_norm = _norm_token(suffix)
+        if suffix_norm in tokens:
+            clean = base.strip("_ ").strip()
+            continue
+        break
+
+    return (clean or "unknown").casefold()
+
 def ub_extract_quality(path_s: pd.Series) -> pd.Series:
     s = path_s.fillna("").astype(str)
     quality = s.str.extract(r"(\d+p)", expand=False)
@@ -646,7 +725,7 @@ def ub_format_geo_summary(geo: dict) -> dict:
 
 
 @st.cache_resource
-def get_db_conn():
+def ub_get_conn():
     con = duckdb.connect(database=":memory:")
     con.execute("PRAGMA threads=4")
     return con
@@ -654,10 +733,10 @@ def get_db_conn():
 
 @st.cache_data(show_spinner="Scanning device IDs ...", ttl=1800)
 def ub_get_device_ids(parquet_glob: str, qs_col: str) -> list:
-    con = get_db_conn()
+    con = ub_get_conn()
     query = f"""
     SELECT DISTINCT regexp_extract({qs_col}, '(?:^|&)device_id=([^&]+)', 1) AS device_id
-    FROM dataset
+    FROM read_parquet({parquet_glob!r})
     WHERE {qs_col} IS NOT NULL
       AND regexp_extract({qs_col}, '(?:^|&)device_id=([^&]+)', 1) <> ''
     ORDER BY 1
@@ -671,7 +750,7 @@ def ub_get_device_ids(parquet_glob: str, qs_col: str) -> list:
 
 @st.cache_data(show_spinner="Loading device data ...", ttl=600)
 def ub_load_device(parquet_glob: str, device_id: str, start_date: str, end_date: str, col_map: dict) -> pd.DataFrame:
-    con  = get_db_conn()
+    con  = ub_get_conn()
     qs   = _cm(col_map, "queryStr")
     ts   = _cm(col_map, "reqTimeSec")
     path = _cm(col_map, "reqPath")
@@ -706,12 +785,13 @@ def ub_load_device(parquet_glob: str, device_id: str, start_date: str, end_date:
         regexp_extract({qs}, '(?:^|&)device_id=([^&]+)',      1) AS device_id,
         regexp_extract({qs}, '(?:^|&)session_id=([^&]+)',     1) AS session_id,
         regexp_extract({qs}, '(?:^|&)channel=([^&]+)',        1) AS channel_param,
+        regexp_extract({qs}, '(?:^|&)channel_name=([^&]+)',   1) AS channel_name_param,
         regexp_extract({qs}, '(?:^|&)content_type=([^&]+)',   1) AS content_type,
         regexp_extract({qs}, '(?:^|&)content_title=([^&]+)',  1) AS content_title,
         regexp_extract({qs}, '(?:^|&)platform=([^&]+)',       1) AS platform,
         regexp_extract({qs}, '(?:^|&)device=([^&]+)',         1) AS device_name_qs,
         regexp_extract({qs}, '(?:^|&)category_name=([^&]+)',  1) AS category_name
-    FROM dataset
+    FROM read_parquet({parquet_glob!r})
     WHERE regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1) = ?
       AND to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE BETWEEN ? AND ?
     ORDER BY TRY_CAST({ts} AS BIGINT)
@@ -731,7 +811,7 @@ def ub_enrich(df: pd.DataFrame) -> pd.DataFrame:
     out["event_time"] = pd.to_datetime(out["reqTimeSec"], unit="s", errors="coerce")
     out = out.dropna(subset=["event_time"]).copy()
 
-    for col in ["channel_param","content_type","content_title","platform","device_name_qs","category_name","device_id","session_id"]:
+    for col in ["channel_param","channel_name_param","content_type","content_title","platform","device_name_qs","category_name","device_id","session_id"]:
         if col in out.columns:
             out[col] = out[col].fillna("").astype(str).map(unquote_plus)
 
@@ -742,7 +822,20 @@ def ub_enrich(df: pd.DataFrame) -> pd.DataFrame:
         out["channel_from_path"] = ""
         out["quality"]           = "unknown"
 
-    out["channel_name"]  = out["channel_param"].replace("", pd.NA).fillna(out.get("channel_from_path", pd.NA)).fillna("Unknown")
+    out["channel_name_raw"] = (
+        out.get("channel_param", pd.Series("", index=out.index)).replace("", pd.NA)
+        .fillna(out.get("channel_name_param", pd.Series("", index=out.index)).replace("", pd.NA))
+        .fillna(out.get("channel_from_path", pd.NA))
+        .fillna("Unknown")
+    )
+    out["channel_name"] = out.apply(
+        lambda r: normalize_channel_name_smart(
+            r.get("channel_name_raw", ""),
+            r.get("platform", ""),
+            r.get("device_name_qs", "")
+        ),
+        axis=1
+    ).replace("", "Unknown")
     out["content_label"] = out["content_title"].replace("", pd.NA).fillna(out["channel_name"]).fillna(out.get("reqPath",""))
 
     ua_col = out["UA"] if "UA" in out.columns else pd.Series("", index=out.index)
@@ -758,6 +851,743 @@ def ub_enrich(df: pd.DataFrame) -> pd.DataFrame:
     out["watch_time_min"] = out["event_time"].dt.hour * 60 + out["event_time"].dt.minute + out["event_time"].dt.second / 60
     return out.sort_values(["device_id","event_time"]).reset_index(drop=True)
 
+
+
+
+def ub_get_device_date_range(parquet_glob: str, device_id: str, col_map: dict):
+    con = ub_get_conn()
+    qs = _cm(col_map, "queryStr")
+    ts = _cm(col_map, "reqTimeSec")
+    query = f"""
+    SELECT
+        MIN(to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE) AS min_date,
+        MAX(to_timestamp(TRY_CAST({ts} AS BIGINT))::DATE) AS max_date
+    FROM read_parquet({parquet_glob!r})
+    WHERE regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1) = ?
+    """
+    try:
+        row = con.execute(query, [device_id]).fetchone()
+        return row if row else (None, None)
+    except Exception:
+        return (None, None)
+
+
+def ub_fig_to_png_bytes(fig) -> bytes:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def ub_build_pdf_report(window_df: pd.DataFrame, sess_df: pd.DataFrame, content_window: pd.DataFrame,
+                        selected_device: str, start_date, end_date, top_channel: str,
+                        top_content: str, est_watch_hrs, n_sessions: int) -> bytes:
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=24, leftMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph(f"User Behavior Report - {selected_device}", styles["Title"]))
+    story.append(Paragraph(f"Date range: {start_date} to {end_date}", styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    summary_data = [
+        ["Metric", "Value"],
+        ["Rows", f"{len(window_df):,}"],
+        ["Sessions", f"{n_sessions:,}"],
+        ["Estimated Watch Hours", str(est_watch_hrs)],
+        ["Top Channel", str(top_channel)],
+        ["Top Content", str(top_content)],
+    ]
+    summary_tbl = Table(summary_data, colWidths=[2.5 * inch, 3.5 * inch])
+    summary_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+    ]))
+    story.append(summary_tbl)
+    story.append(Spacer(1, 12))
+
+    if not window_df.empty:
+        # Activity chart
+        min_act = (window_df.set_index("event_time").resample("1min").size().rename("requests").reset_index())
+        fig = plt.figure(figsize=(8, 3))
+        plt.plot(min_act["event_time"], min_act["requests"])
+        plt.title("Minute-by-minute activity")
+        plt.xlabel("Time")
+        plt.ylabel("Requests")
+        plt.xticks(rotation=30)
+        plt.tight_layout()
+        story.append(Paragraph("Activity", styles["Heading2"]))
+        story.append(Image(io.BytesIO(ub_fig_to_png_bytes(fig)), width=7.2 * inch, height=2.7 * inch))
+        story.append(Spacer(1, 10))
+
+        # Top channels chart
+        ch = window_df["channel_name"].value_counts().head(10).sort_values(ascending=True)
+        if not ch.empty:
+            fig = plt.figure(figsize=(8, 3.5))
+            plt.barh(ch.index.astype(str), ch.values)
+            plt.title("Top Channels by Requests")
+            plt.xlabel("Requests")
+            plt.tight_layout()
+            story.append(Paragraph("Top Channels", styles["Heading2"]))
+            story.append(Image(io.BytesIO(ub_fig_to_png_bytes(fig)), width=7.2 * inch, height=3.0 * inch))
+            story.append(Spacer(1, 10))
+
+    if not content_window.empty:
+        top_content_df = content_window.head(10).copy()
+        fig = plt.figure(figsize=(8, 4))
+        plt.barh(top_content_df["content_label"].astype(str)[::-1], top_content_df["est_watch_min"][::-1])
+        plt.title("Top Content by Estimated Watch Minutes")
+        plt.xlabel("Estimated Watch Minutes")
+        plt.tight_layout()
+        story.append(Paragraph("Top Content", styles["Heading2"]))
+        story.append(Image(io.BytesIO(ub_fig_to_png_bytes(fig)), width=7.2 * inch, height=3.2 * inch))
+        story.append(Spacer(1, 10))
+
+        cols = [c for c in ["content_label", "channel_name", "requests", "est_watch_min", "sessions"] if c in top_content_df.columns]
+        tbl_data = [cols] + top_content_df[cols].astype(str).values.tolist()
+        tbl = Table(tbl_data, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(Paragraph("Content Summary", styles["Heading2"]))
+        story.append(tbl)
+        story.append(Spacer(1, 10))
+
+    if not sess_df.empty:
+        story.append(PageBreak())
+        top_sess = sess_df.sort_values("est_watch_min", ascending=False).head(15).copy()
+        cols = [c for c in ["session_key", "start", "end", "requests", "unique_channels", "est_watch_min", "top_channel"] if c in top_sess.columns]
+        tbl_data = [cols] + top_sess[cols].astype(str).values.tolist()
+        tbl = Table(tbl_data, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(Paragraph("Session Summary", styles["Heading2"]))
+        story.append(tbl)
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+
+
+@st.cache_data(show_spinner="Loading global behavior coverage ...", ttl=900)
+def gb_get_coverage(parquet_glob: list, col_map: dict, start_date: str, end_date: str, timezone_offset_hours: float = 0, platform_filter: str = "(All)") -> dict:
+    con = ub_get_conn()
+    qs   = _cm(col_map, "queryStr")
+    ts   = _cm(col_map, "reqTimeSec")
+    offset_seconds = int(float(timezone_offset_hours) * 3600)
+    platform_condition = gb_build_platform_condition(qs, platform_filter)
+    query = f"""
+    WITH base AS (
+        SELECT {qs} AS queryStr, TRY_CAST({ts} AS BIGINT) AS req_ts
+        FROM read_parquet({parquet_glob!r})
+        WHERE to_timestamp(TRY_CAST({ts} AS BIGINT) + {offset_seconds})::DATE BETWEEN ? AND ?
+        {platform_condition}
+    )
+    SELECT
+        COUNT(*) AS total_rows,
+        SUM(CASE WHEN queryStr IS NOT NULL AND queryStr LIKE '%session_id=%' THEN 1 ELSE 0 END) AS behavior_rows,
+        COUNT(DISTINCT CASE WHEN queryStr IS NOT NULL AND queryStr LIKE '%session_id=%'
+              THEN regexp_extract(queryStr, '(?:^|&)session_id=([^&]+)', 1) END) AS sessions,
+        COUNT(DISTINCT CASE WHEN queryStr IS NOT NULL AND queryStr LIKE '%session_id=%'
+              THEN regexp_extract(queryStr, '(?:^|&)device_id=([^&]+)', 1) END) AS devices
+    FROM base
+    """
+    row = con.execute(query, [start_date, end_date]).fetchone()
+    total_rows, behavior_rows, sessions, devices = row
+    coverage_pct = (behavior_rows / total_rows * 100) if total_rows else 0
+    return {
+        "total_rows": int(total_rows or 0),
+        "behavior_rows": int(behavior_rows or 0),
+        "coverage_pct": coverage_pct,
+        "sessions": int(sessions or 0),
+        "devices": int(devices or 0),
+    }
+
+
+def gb_tz_offset_hours(tz_label: str) -> float:
+    mapping = {
+        "UTC": 0,
+        "Asia/Kolkata (IST)": 5.5,
+        "Asia/Dubai": 4,
+        "Europe/London": 0,
+        "America/New_York": -5,
+        "America/Los_Angeles": -8,
+    }
+    return float(mapping.get(tz_label, 0))
+
+
+@st.cache_data(show_spinner="Loading platform values ...", ttl=900)
+def gb_get_platform_values(parquet_glob: list, col_map: dict, start_date: str, end_date: str, timezone_offset_hours: float = 0) -> list:
+    con = ub_get_conn()
+    qs = _cm(col_map, "queryStr")
+    ts = _cm(col_map, "reqTimeSec")
+    offset_seconds = int(float(timezone_offset_hours) * 3600)
+    query = f"""
+    SELECT DISTINCT regexp_extract({qs}, '(?:^|&)platform=([^&]+)', 1) AS platform
+    FROM read_parquet({parquet_glob!r})
+    WHERE {qs} IS NOT NULL
+      AND {qs} LIKE '%session_id=%'
+      AND to_timestamp(TRY_CAST({ts} AS BIGINT) + {offset_seconds})::DATE BETWEEN ? AND ?
+      AND regexp_extract({qs}, '(?:^|&)platform=([^&]+)', 1) <> ''
+    ORDER BY 1
+    """
+    try:
+        df = con.execute(query, [start_date, end_date]).df()
+        return sorted(set(unquote_plus(str(x)) for x in df["platform"].dropna().tolist() if str(x).strip()))
+    except Exception:
+        return []
+
+
+def gb_build_platform_condition(qs_col: str, platform_filter: str) -> str:
+    if not platform_filter or platform_filter == "(All)":
+        return ""
+    safe = str(platform_filter).replace("'", "''")
+    return f" AND lower(regexp_extract({qs_col}, '(?:^|&)platform=([^&]+)', 1)) = lower('{safe}') "
+
+
+def gb_build_global_pdf_report(cov: dict, day_df: pd.DataFrame, sticky_df: pd.DataFrame, ret_df: pd.DataFrame,
+                               trans_df: pd.DataFrame, rate_df: pd.DataFrame, sess_bucket_df: pd.DataFrame,
+                               start_date: str, end_date: str, focus: str, platform_filter: str, timezone_label: str) -> bytes:
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=24, leftMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = []
+    story.append(Paragraph("Global Behavior Report", styles["Title"]))
+    story.append(Paragraph(f"Date range: {start_date} to {end_date}", styles["Normal"]))
+    story.append(Paragraph(f"Focus: {focus} | Platform: {platform_filter} | Timezone: {timezone_label}", styles["Normal"]))
+    story.append(Spacer(1, 10))
+    summary_data = [["Metric", "Value"], ["Rows in range", f"{cov.get('total_rows', 0):,}"], ["Behavior rows", f"{cov.get('behavior_rows', 0):,}"], ["Coverage", f"{cov.get('coverage_pct', 0):.2f}%"], ["Sessions", f"{cov.get('sessions', 0):,}"], ["Devices", f"{cov.get('devices', 0):,}"]]
+    tbl = Table(summary_data, colWidths=[2.5 * inch, 3.5 * inch])
+    tbl.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("GRID", (0, 0), (-1, -1), 0.5, colors.grey), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold")]))
+    story.append(tbl)
+    story.append(Spacer(1, 12))
+    def add_table(title, df, max_rows=15):
+        if df is None or df.empty:
+            return
+        story.append(Paragraph(title, styles["Heading2"]))
+        small = df.head(max_rows).copy()
+        cols = list(small.columns)[:7]
+        data = [cols] + small[cols].astype(str).values.tolist()
+        t = Table(data, repeatRows=1)
+        t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 7)]))
+        story.append(t)
+        story.append(Spacer(1, 10))
+    add_table("Day-part leaders", day_df)
+    add_table("Stickiness", sticky_df)
+    add_table("Retention proxy", ret_df)
+    add_table("Top transitions", trans_df)
+    add_table("Switch-away rate", rate_df)
+    add_table("Switches per session", sess_bucket_df)
+    doc.build(story)
+    return buf.getvalue()
+
+
+
+@st.cache_data(show_spinner="Loading pure channel master ...", ttl=900)
+def gb_get_channel_master_smart(parquet_glob: list, col_map: dict, start_date: str, end_date: str, top_n: int = 5000, timezone_offset_hours: float = 0, platform_filter: str = "(All)") -> pd.DataFrame:
+    """Get raw channel/platform/device combos, then clean channels in Python exactly like User Behavior."""
+    con = ub_get_conn()
+    qs = _cm(col_map, "queryStr")
+    ts = _cm(col_map, "reqTimeSec")
+    path = _cm(col_map, "reqPath")
+    offset_seconds = int(float(timezone_offset_hours) * 3600)
+    platform_condition = gb_build_platform_condition(qs, platform_filter)
+    query = f"""
+    SELECT
+        COALESCE(NULLIF(regexp_extract({qs}, '(?:^|&)channel=([^&]+)', 1), ''),
+                 NULLIF(regexp_extract({qs}, '(?:^|&)channel_name=([^&]+)', 1), ''),
+                 NULLIF(regexp_extract({path}, '(vglive-sk-\d+)', 1), ''),
+                 'Unknown') AS raw_channel,
+        regexp_extract({qs}, '(?:^|&)platform=([^&]+)', 1) AS platform,
+        regexp_extract({qs}, '(?:^|&)device=([^&]+)', 1) AS device_name,
+        COUNT(*) AS requests,
+        COUNT(DISTINCT regexp_extract({qs}, '(?:^|&)session_id=([^&]+)', 1)) AS sessions,
+        COUNT(DISTINCT regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1)) AS devices
+    FROM read_parquet({parquet_glob!r})
+    WHERE {qs} IS NOT NULL
+      AND {qs} LIKE '%session_id=%'
+      AND to_timestamp(TRY_CAST({ts} AS BIGINT) + {offset_seconds})::DATE BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+      {platform_condition}
+    GROUP BY 1,2,3
+    ORDER BY requests DESC
+    LIMIT {int(top_n)}
+    """
+    df = con.execute(query).df()
+    if df.empty:
+        return df
+    for c in ["raw_channel", "platform", "device_name"]:
+        df[c] = df[c].fillna("").astype(str).map(unquote_plus)
+    df["pure_channel"] = df.apply(
+        lambda r: normalize_channel_name_smart(r.get("raw_channel", ""), r.get("platform", ""), r.get("device_name", "")),
+        axis=1,
+    )
+    return (
+        df.groupby(["pure_channel", "raw_channel", "platform", "device_name"], dropna=False)
+          .agg(requests=("requests", "sum"), sessions=("sessions", "sum"), devices=("devices", "sum"))
+          .reset_index()
+          .sort_values(["requests", "sessions"], ascending=False)
+    )
+
+def gb_behavior_cte(parquet_glob: list, col_map: dict, start_date: str, end_date: str, daypart_mode: str = "Default", timezone_offset_hours: float = 0, platform_filter: str = "(All)") -> str:
+    qs   = _cm(col_map, "queryStr")
+    ts   = _cm(col_map, "reqTimeSec")
+    path = _cm(col_map, "reqPath")
+    ua   = _cm(col_map, "UA")
+    offset_seconds = int(float(timezone_offset_hours) * 3600)
+    platform_condition = gb_build_platform_condition(qs, platform_filter)
+
+    if daypart_mode == "TV Style":
+        daypart_case = """
+            CASE
+                WHEN EXTRACT('hour' FROM event_time) BETWEEN 5 AND 9 THEN 'Morning'
+                WHEN EXTRACT('hour' FROM event_time) BETWEEN 10 AND 16 THEN 'Daytime'
+                WHEN EXTRACT('hour' FROM event_time) BETWEEN 17 AND 21 THEN 'Evening'
+                ELSE 'Late Night'
+            END
+        """
+    else:
+        daypart_case = """
+            CASE
+                WHEN EXTRACT('hour' FROM event_time) BETWEEN 5 AND 11 THEN 'Morning'
+                WHEN EXTRACT('hour' FROM event_time) BETWEEN 12 AND 16 THEN 'Afternoon'
+                WHEN EXTRACT('hour' FROM event_time) BETWEEN 17 AND 21 THEN 'Evening'
+                ELSE 'Night'
+            END
+        """
+
+    return f"""
+    WITH behavior AS (
+        SELECT
+            to_timestamp(TRY_CAST({ts} AS BIGINT) + {offset_seconds}) AS event_time,
+            TRY_CAST({ts} AS BIGINT) AS reqTimeSec,
+            {path} AS reqPath,
+            {qs}   AS queryStr,
+            {ua}   AS UA,
+            regexp_extract({qs}, '(?:^|&)device_id=([^&]+)', 1)      AS device_id,
+            regexp_extract({qs}, '(?:^|&)session_id=([^&]+)', 1)     AS session_id,
+            regexp_extract({qs}, '(?:^|&)channel=([^&]+)', 1)        AS channel_qs,
+            regexp_extract({qs}, '(?:^|&)channel_name=([^&]+)', 1)   AS channel_name_qs,
+            regexp_extract({qs}, '(?:^|&)content_title=([^&]+)', 1)  AS content_title_qs,
+            regexp_extract({qs}, '(?:^|&)platform=([^&]+)', 1)       AS platform,
+            regexp_extract({qs}, '(?:^|&)device=([^&]+)', 1)         AS device_name_qs,
+            regexp_extract({qs}, '(?:^|&)category_name=([^&]+)', 1)  AS category_name
+        FROM read_parquet({parquet_glob!r})
+        WHERE {qs} IS NOT NULL
+          AND {qs} LIKE '%session_id=%'
+          AND to_timestamp(TRY_CAST({ts} AS BIGINT) + {offset_seconds})::DATE BETWEEN DATE '{start_date}' AND DATE '{end_date}'
+          {platform_condition}
+    ),
+    enriched AS (
+        SELECT
+            *,
+            COALESCE(NULLIF(channel_qs, ''), NULLIF(channel_name_qs, ''), NULLIF(regexp_extract(reqPath, '(vglive-sk-\d+)', 1), ''), 'Unknown') AS channel_name_raw,
+            lower(regexp_replace(regexp_replace(COALESCE(NULLIF(channel_qs, ''), NULLIF(channel_name_qs, ''), NULLIF(regexp_extract(reqPath, '(vglive-sk-\d+)', 1), ''), 'Unknown'), '\\s*_\\s*', '_', 'g'), '_(firetv|firestick|fireos|androidtv|android|web|webos|lg|lgtv|apple|appletv|ios|iphone|ipad|samsung|samsungtv|tizen|roku|mi|mitv|xiaomi|sony|bravia|id|tv|mobile|phone|tablet)$', '', 'i')) AS channel_name,
+            COALESCE(NULLIF(content_title_qs, ''), NULLIF(channel_qs, ''), NULLIF(channel_name_qs, ''), NULLIF(regexp_extract(reqPath, '(vglive-sk-\d+)', 1), ''), reqPath) AS content_label,
+            {daypart_case} AS day_part,
+            CASE
+                WHEN lower(coalesce(platform, '')) LIKE '%android_tv%' OR lower(coalesce(UA, '')) ~ 'smarttv|hismarttv|bravia|\btv\b' THEN 'Smart TV'
+                WHEN lower(coalesce(UA, '')) LIKE '%android%' THEN 'Android'
+                WHEN lower(coalesce(UA, '')) LIKE '%iphone%' THEN 'iPhone'
+                WHEN lower(coalesce(UA, '')) LIKE '%ipad%' THEN 'iPad'
+                WHEN lower(coalesce(UA, '')) LIKE '%windows%' THEN 'Windows'
+                WHEN lower(coalesce(UA, '')) LIKE '%mac%' THEN 'Mac'
+                ELSE 'Other'
+            END AS device_type
+        FROM behavior
+        WHERE session_id <> '' AND device_id <> ''
+    )
+    """
+
+
+@st.cache_data(show_spinner="Loading global behavior day-part data ...", ttl=900)
+def gb_get_daypart_top(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean", timezone_offset_hours: float = 0, platform_filter: str = "(All)") -> pd.DataFrame:
+    con = ub_get_conn()
+    entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
+    query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode, timezone_offset_hours, platform_filter) + f"""
+    SELECT *
+    FROM (
+        SELECT
+            day_part,
+            {entity_expr} AS entity_name,
+            COUNT(*) AS requests,
+            COUNT(DISTINCT session_id) AS sessions,
+            COUNT(DISTINCT device_id) AS devices,
+            ROW_NUMBER() OVER (PARTITION BY day_part ORDER BY COUNT(DISTINCT session_id) DESC, COUNT(*) DESC) AS rn
+        FROM enriched
+        GROUP BY 1, 2
+    ) q
+    WHERE rn <= {int(top_n)}
+    ORDER BY day_part, rn
+    """
+    return con.execute(query).df()
+
+
+@st.cache_data(show_spinner="Loading global stickiness data ...", ttl=900)
+def gb_get_stickiness(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean", timezone_offset_hours: float = 0, platform_filter: str = "(All)") -> pd.DataFrame:
+    con = ub_get_conn()
+    entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
+    query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode, timezone_offset_hours, platform_filter) + f"""
+    , seq AS (
+        SELECT
+            *,
+            LEAD(event_time) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_event_time,
+            LEAD({entity_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_entity
+        FROM enriched
+    )
+    SELECT
+        {entity_expr} AS entity_name,
+        COUNT(*) AS requests,
+        COUNT(DISTINCT session_id) AS sessions,
+        COUNT(DISTINCT device_id) AS devices,
+        ROUND(SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / 60.0, 2) AS watch_min,
+        ROUND(SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / NULLIF(COUNT(*), 0) / 60.0, 3) AS avg_watch_per_request,
+        ROUND(SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / NULLIF(COUNT(DISTINCT session_id), 0) / 60.0, 2) AS avg_watch_per_session,
+        ROUND(100.0 * AVG(CASE WHEN next_entity IS NOT NULL AND next_entity <> {entity_expr} THEN 1 ELSE 0 END), 2) AS switch_away_pct
+    FROM seq
+    GROUP BY 1
+    HAVING COUNT(DISTINCT session_id) >= 3
+    ORDER BY sessions DESC, watch_min DESC
+    LIMIT {int(top_n)}
+    """
+    df = con.execute(query).df()
+    if not df.empty:
+        req_med = float(df["requests"].median()) if len(df) else 0
+        wpr_med = float(df["avg_watch_per_request"].median()) if len(df) else 0
+        def classify(r):
+            if r["requests"] >= req_med and r["avg_watch_per_request"] < wpr_med:
+                return "High traffic, low retention"
+            if r["requests"] >= req_med and r["avg_watch_per_request"] >= wpr_med:
+                return "Strong"
+            if r["requests"] < req_med and r["avg_watch_per_request"] >= wpr_med:
+                return "Niche but sticky"
+            return "Low traction"
+        df["label"] = df.apply(classify, axis=1)
+    return df
+
+
+@st.cache_data(show_spinner="Loading global retention data ...", ttl=900)
+def gb_get_retention_buckets(parquet_glob: list, col_map: dict, start_date: str, end_date: str, entity: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean", timezone_offset_hours: float = 0, platform_filter: str = "(All)") -> pd.DataFrame:
+    con = ub_get_conn()
+    entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
+    query = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode, timezone_offset_hours, platform_filter) + f"""
+    , seq AS (
+        SELECT
+            *,
+            LEAD(event_time) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_event_time
+        FROM enriched
+    ),
+    watches AS (
+        SELECT
+            session_id,
+            device_id,
+            {entity_expr} AS entity_name,
+            SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / 60.0 AS watch_min
+        FROM seq
+        GROUP BY 1,2,3
+    ),
+    bucketed AS (
+        SELECT
+            entity_name,
+            CASE
+                WHEN watch_min < 1 THEN 'Bounce (<1m)'
+                WHEN watch_min < 5 THEN 'Short (1-5m)'
+                WHEN watch_min < 15 THEN 'Medium (5-15m)'
+                ELSE 'Long (15m+)'
+            END AS watch_bucket,
+            COUNT(*) AS sessions
+        FROM watches
+        GROUP BY 1,2
+    )
+    SELECT *
+    FROM bucketed
+    WHERE entity_name IN (
+        SELECT entity_name
+        FROM bucketed
+        GROUP BY 1
+        ORDER BY SUM(sessions) DESC
+        LIMIT {int(top_n)}
+    )
+    ORDER BY entity_name, watch_bucket
+    """
+    return con.execute(query).df()
+
+
+@st.cache_data(show_spinner="Loading switching behavior data ...", ttl=900)
+def gb_get_switching(parquet_glob: list, col_map: dict, start_date: str, end_date: str, top_n: int, daypart_mode: str = "Default", channel_mode: str = "Clean", timezone_offset_hours: float = 0, platform_filter: str = "(All)") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    con = ub_get_conn()
+    cte = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode, timezone_offset_hours, platform_filter)
+    channel_expr = "channel_name_raw" if channel_mode == "Raw" else "channel_name"
+    trans_query = cte + f"""
+    , seq AS (
+        SELECT
+            *,
+            LEAD({channel_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_channel,
+            LEAD(event_time) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_event_time
+        FROM enriched
+    )
+    SELECT
+        {channel_expr} AS from_channel,
+        next_channel AS to_channel,
+        COUNT(*) AS transitions,
+        ROUND(AVG(GREATEST(date_diff('second', event_time, next_event_time), 0)), 2) AS avg_gap_sec
+    FROM seq
+    WHERE next_channel IS NOT NULL AND next_channel <> {channel_expr}
+    GROUP BY 1,2
+    ORDER BY transitions DESC
+    LIMIT {int(top_n)}
+    """
+    rate_query = cte + f"""
+    , seq AS (
+        SELECT
+            *,
+            LEAD({channel_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_channel
+        FROM enriched
+    )
+    SELECT
+        {channel_expr} AS channel_name,
+        COUNT(*) AS events,
+        ROUND(100.0 * AVG(CASE WHEN next_channel IS NOT NULL AND next_channel <> {channel_expr} THEN 1 ELSE 0 END), 2) AS switch_away_pct
+    FROM seq
+    GROUP BY 1
+    HAVING COUNT(*) >= 20
+    ORDER BY switch_away_pct DESC, events DESC
+    LIMIT 20
+    """
+    sess_query = cte + f"""
+    , seq AS (
+        SELECT
+            *,
+            LAG({channel_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS prev_channel
+        FROM enriched
+    ),
+    session_switches AS (
+        SELECT
+            session_id,
+            COUNT(*) FILTER (WHERE prev_channel IS NOT NULL AND prev_channel <> {channel_expr}) AS switches
+        FROM seq
+        GROUP BY 1
+    )
+    SELECT
+        CASE
+            WHEN switches = 0 THEN '0'
+            WHEN switches = 1 THEN '1'
+            WHEN switches BETWEEN 2 AND 3 THEN '2-3'
+            ELSE '4+'
+        END AS switch_bucket,
+        COUNT(*) AS sessions
+    FROM session_switches
+    GROUP BY 1
+    ORDER BY CASE switch_bucket WHEN '0' THEN 0 WHEN '1' THEN 1 WHEN '2-3' THEN 2 ELSE 3 END
+    """
+    return con.execute(trans_query).df(), con.execute(rate_query).df(), con.execute(sess_query).df()
+
+
+
+# ─────────────────────────────────────────────
+# Global Behavior cache helpers
+# ─────────────────────────────────────────────
+
+def _gb_cache_table_name(folder_key: str, start_date: str, end_date: str, daypart_mode: str, timezone_offset_hours: float, platform_filter: str) -> str:
+    import hashlib
+    raw = f"{folder_key}|{start_date}|{end_date}|{daypart_mode}|{timezone_offset_hours}|{platform_filter}"
+    return "gb_cache_" + hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def gb_prepare_behavior_cache(parquet_glob: list, col_map: dict, folder_key: str, start_date: str, end_date: str,
+                              daypart_mode: str = "Default", timezone_offset_hours: float = 0,
+                              platform_filter: str = "(All)") -> str:
+    """Materialize the selected behavior slice once in DuckDB so all Global Behavior sections reuse it."""
+    con = ub_get_conn()
+    table_name = _gb_cache_table_name(folder_key, start_date, end_date, daypart_mode, timezone_offset_hours, platform_filter)
+    exists = con.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+        [table_name]
+    ).fetchone()[0]
+    if not exists:
+        cte = gb_behavior_cte(parquet_glob, col_map, start_date, end_date, daypart_mode, timezone_offset_hours, platform_filter)
+        con.execute(f"CREATE TEMP TABLE {table_name} AS " + cte + " SELECT * FROM enriched")
+    return table_name
+
+
+def gb_get_daypart_top_cached(cache_table: str, entity: str, top_n: int, channel_mode: str = "Clean") -> pd.DataFrame:
+    con = ub_get_conn()
+    entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
+    query = f"""
+    SELECT *
+    FROM (
+        SELECT
+            day_part,
+            {entity_expr} AS entity_name,
+            COUNT(*) AS requests,
+            COUNT(DISTINCT session_id) AS sessions,
+            COUNT(DISTINCT device_id) AS devices,
+            ROW_NUMBER() OVER (PARTITION BY day_part ORDER BY COUNT(DISTINCT session_id) DESC, COUNT(*) DESC) AS rn
+        FROM {cache_table}
+        GROUP BY 1, 2
+    ) q
+    WHERE rn <= {int(top_n)}
+    ORDER BY day_part, rn
+    """
+    return con.execute(query).df()
+
+
+def gb_get_stickiness_cached(cache_table: str, entity: str, top_n: int, channel_mode: str = "Clean") -> pd.DataFrame:
+    con = ub_get_conn()
+    entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
+    query = f"""
+    WITH seq AS (
+        SELECT
+            *,
+            LEAD(event_time) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_event_time,
+            LEAD({entity_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_entity
+        FROM {cache_table}
+    )
+    SELECT
+        {entity_expr} AS entity_name,
+        COUNT(*) AS requests,
+        COUNT(DISTINCT session_id) AS sessions,
+        COUNT(DISTINCT device_id) AS devices,
+        ROUND(SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / 60.0, 2) AS watch_min,
+        ROUND(SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / NULLIF(COUNT(*), 0) / 60.0, 3) AS avg_watch_per_request,
+        ROUND(SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / NULLIF(COUNT(DISTINCT session_id), 0) / 60.0, 2) AS avg_watch_per_session,
+        ROUND(100.0 * AVG(CASE WHEN next_entity IS NOT NULL AND next_entity <> {entity_expr} THEN 1 ELSE 0 END), 2) AS switch_away_pct
+    FROM seq
+    GROUP BY 1
+    HAVING COUNT(DISTINCT session_id) >= 3
+    ORDER BY sessions DESC, watch_min DESC
+    LIMIT {int(top_n)}
+    """
+    df = con.execute(query).df()
+    if not df.empty:
+        req_med = float(df["requests"].median()) if len(df) else 0
+        wpr_med = float(df["avg_watch_per_request"].median()) if len(df) else 0
+        def classify(r):
+            if r["requests"] >= req_med and r["avg_watch_per_request"] < wpr_med:
+                return "High traffic, low retention"
+            if r["requests"] >= req_med and r["avg_watch_per_request"] >= wpr_med:
+                return "Strong"
+            if r["requests"] < req_med and r["avg_watch_per_request"] >= wpr_med:
+                return "Niche but sticky"
+            return "Low traction"
+        df["label"] = df.apply(classify, axis=1)
+    return df
+
+
+def gb_get_retention_buckets_cached(cache_table: str, entity: str, top_n: int, channel_mode: str = "Clean") -> pd.DataFrame:
+    con = ub_get_conn()
+    entity_expr = ("channel_name_raw" if channel_mode == "Raw" else "channel_name") if entity == "Channel" else "content_label"
+    query = f"""
+    WITH seq AS (
+        SELECT *, LEAD(event_time) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_event_time
+        FROM {cache_table}
+    ),
+    watches AS (
+        SELECT
+            session_id,
+            device_id,
+            {entity_expr} AS entity_name,
+            SUM(LEAST(GREATEST(date_diff('second', event_time, next_event_time), 0), {WATCH_GAP_CAP_SECONDS})) / 60.0 AS watch_min
+        FROM seq
+        GROUP BY 1,2,3
+    ),
+    bucketed AS (
+        SELECT
+            entity_name,
+            CASE
+                WHEN watch_min < 1 THEN 'Bounce (<1m)'
+                WHEN watch_min < 5 THEN 'Short (1-5m)'
+                WHEN watch_min < 15 THEN 'Medium (5-15m)'
+                ELSE 'Long (15m+)'
+            END AS watch_bucket,
+            COUNT(*) AS sessions
+        FROM watches
+        GROUP BY 1,2
+    )
+    SELECT *
+    FROM bucketed
+    WHERE entity_name IN (
+        SELECT entity_name
+        FROM bucketed
+        GROUP BY 1
+        ORDER BY SUM(sessions) DESC
+        LIMIT {int(top_n)}
+    )
+    ORDER BY entity_name, watch_bucket
+    """
+    return con.execute(query).df()
+
+
+def gb_get_switching_cached(cache_table: str, top_n: int, channel_mode: str = "Clean") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    con = ub_get_conn()
+    channel_expr = "channel_name_raw" if channel_mode == "Raw" else "channel_name"
+    trans_query = f"""
+    WITH seq AS (
+        SELECT
+            *,
+            LEAD({channel_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_channel,
+            LEAD(event_time) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_event_time
+        FROM {cache_table}
+    )
+    SELECT
+        {channel_expr} AS from_channel,
+        next_channel AS to_channel,
+        COUNT(*) AS transitions,
+        ROUND(AVG(GREATEST(date_diff('second', event_time, next_event_time), 0)), 2) AS avg_gap_sec
+    FROM seq
+    WHERE next_channel IS NOT NULL AND next_channel <> {channel_expr}
+    GROUP BY 1,2
+    ORDER BY transitions DESC
+    LIMIT {int(top_n)}
+    """
+    rate_query = f"""
+    WITH seq AS (
+        SELECT *, LEAD({channel_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS next_channel
+        FROM {cache_table}
+    )
+    SELECT
+        {channel_expr} AS channel_name,
+        COUNT(*) AS events,
+        ROUND(100.0 * AVG(CASE WHEN next_channel IS NOT NULL AND next_channel <> {channel_expr} THEN 1 ELSE 0 END), 2) AS switch_away_pct
+    FROM seq
+    GROUP BY 1
+    HAVING COUNT(*) >= 20
+    ORDER BY switch_away_pct DESC, events DESC
+    LIMIT 20
+    """
+    sess_query = f"""
+    WITH seq AS (
+        SELECT *, LAG({channel_expr}) OVER (PARTITION BY device_id, session_id ORDER BY event_time) AS prev_channel
+        FROM {cache_table}
+    ),
+    session_switches AS (
+        SELECT session_id, COUNT(*) FILTER (WHERE prev_channel IS NOT NULL AND prev_channel <> {channel_expr}) AS switches
+        FROM seq
+        GROUP BY 1
+    )
+    SELECT
+        CASE
+            WHEN switches = 0 THEN '0'
+            WHEN switches = 1 THEN '1'
+            WHEN switches BETWEEN 2 AND 3 THEN '2-3'
+            ELSE '4+'
+        END AS switch_bucket,
+        COUNT(*) AS sessions
+    FROM session_switches
+    GROUP BY 1
+    ORDER BY CASE switch_bucket WHEN '0' THEN 0 WHEN '1' THEN 1 WHEN '2-3' THEN 2 ELSE 3 END
+    """
+    return con.execute(trans_query).df(), con.execute(rate_query).df(), con.execute(sess_query).df()
 
 # ─────────────────────────────────────────────
 # SIDEBAR
@@ -947,12 +1777,13 @@ with st.expander(f"📂 {n_fol} active folder(s)", expanded=False):
 
 st.markdown("---")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📋 Columns",
     "🔍 Unique Values",
     "🎯 Filter & Export",
     "🔎 Query String Analyzer",
     "📺 User Behavior",
+    "🌐 Global Behavior",
 ])
 
 
@@ -1315,6 +2146,64 @@ with tab4:
 
     if parsed_df is not None and not parsed_df.empty:
         st.markdown("---")
+
+        # ── Pure channel list from parsed query strings ──────────────────────────────
+        if "channel" in parsed_df.columns or "channel_name" in parsed_df.columns:
+            with st.expander("✅ Pure Channel List (cleaned from queryStr)", expanded=False):
+                ch_src = parsed_df.copy()
+                if "channel" not in ch_src.columns:
+                    ch_src["channel"] = ""
+                if "channel_name" not in ch_src.columns:
+                    ch_src["channel_name"] = ""
+                ch_src["raw_channel_qsa"] = ch_src["channel"].astype(str).where(
+                    ch_src["channel"].astype(str).str.strip() != "",
+                    ch_src["channel_name"].astype(str)
+                )
+                ch_src = ch_src[ch_src["raw_channel_qsa"].astype(str).str.strip() != ""].copy()
+                if not ch_src.empty:
+                    if "platform" not in ch_src.columns:
+                        ch_src["platform"] = ""
+                    if "device" not in ch_src.columns:
+                        ch_src["device"] = ""
+                    ch_src["pure_channel"] = ch_src.apply(
+                        lambda r: normalize_channel_name_smart(r.get("raw_channel_qsa", ""), r.get("platform", ""), r.get("device", "")),
+                        axis=1,
+                    )
+                    ch_master = (
+                        ch_src.groupby(["pure_channel", "raw_channel_qsa", "platform", "device"], dropna=False)["_count"]
+                        .sum()
+                        .reset_index()
+                        .rename(columns={"raw_channel_qsa": "raw_channel", "device": "device_name", "_count": "records"})
+                        .sort_values("records", ascending=False)
+                    )
+                    ch_pure = (
+                        ch_master.groupby("pure_channel", dropna=False)["records"]
+                        .sum()
+                        .reset_index()
+                        .sort_values("records", ascending=False)
+                    )
+                    st.caption("Use this list for pure business channels. The normal Unique Values tab shows raw log values, so it will still show FireTV/AndroidTV suffixes.")
+                    cpa, cpb = st.columns(2)
+                    with cpa:
+                        st.markdown("**Pure channels**")
+                        st.dataframe(ch_pure, use_container_width=True, hide_index=True, height=300)
+                        st.download_button(
+                            "📥 Download pure channel list",
+                            data=ch_pure.to_csv(index=False).encode("utf-8"),
+                            file_name="pure_channel_list.csv",
+                            mime="text/csv",
+                            key="qsa_dl_pure_channels",
+                        )
+                    with cpb:
+                        st.markdown("**Raw → clean mapping**")
+                        st.dataframe(ch_master, use_container_width=True, hide_index=True, height=300)
+                        st.download_button(
+                            "📥 Download raw-to-clean mapping",
+                            data=ch_master.to_csv(index=False).encode("utf-8"),
+                            file_name="channel_raw_to_clean_mapping.csv",
+                            mime="text/csv",
+                            key="qsa_dl_channel_mapping",
+                        )
 
         # ── Tabs within this tab ──────────────────────────────
         sub1, sub2, sub3, sub4 = st.tabs([
@@ -1810,6 +2699,7 @@ with tab5:
 
     # ── Auto-load selected device once ────────────────────────
     if st.session_state.get("ub_loaded_device") != selected_device or st.session_state.get("ub_tmp_df") is None:
+        min_d, max_d = ub_get_device_date_range(pq_glob, selected_device, cm)
         _bar2 = st.progress(0, text="Loading selected device ...")
         _ph2  = st.empty()
         _stages2 = [
@@ -1817,7 +2707,7 @@ with tab5:
             (25, "Filtering by device_id"),
             (55, "Reading matching rows"),
             (80, "Parsing query strings"),
-            (92, "Preparing date range"),
+            (92, "Preparing cached dataset"),
         ]
         _raw = ub_staged_progress(_bar2, _ph2, _stages2,
                                    lambda: ub_load_device(pq_glob, selected_device,
@@ -1833,10 +2723,16 @@ with tab5:
         if tmp_df.empty:
             st.warning("No rows found for this device.")
             st.stop()
+        if min_d is None or max_d is None:
+            min_d, max_d = tmp_df["event_date"].min(), tmp_df["event_date"].max()
         st.session_state["ub_tmp_df"] = tmp_df
         st.session_state["ub_loaded_device"] = selected_device
         st.session_state["ub_active_device"] = selected_device
-        st.session_state["ub_date_range"] = (tmp_df["event_date"].min(), tmp_df["event_date"].max())
+        st.session_state["ub_device_min_date"] = min_d
+        st.session_state["ub_device_max_date"] = max_d
+        st.session_state["ub_sessionized_df"] = None
+        st.session_state["ub_sessionized_key"] = None
+        st.session_state["ub_date_range"] = (min_d, max_d)
         st.session_state["ub_start_time"] = dtime(0, 0)
         st.session_state["ub_end_time"] = dtime(23, 59)
         st.session_state["ub_min_req"] = 1
@@ -1849,22 +2745,24 @@ with tab5:
     # ── Step 2 — Pick date range ─────────────────────────────
     st.markdown("#### Step 2 — Pick date range")
     all_dates = tmp_df["event_date"]
+    min_allowed_date = st.session_state.get("ub_device_min_date", all_dates.min())
+    max_allowed_date = st.session_state.get("ub_device_max_date", all_dates.max())
 
     if st.session_state.get("ub_active_device") != selected_device:
         st.session_state["ub_active_device"] = selected_device
-        st.session_state["ub_date_range"] = (all_dates.min(), all_dates.max())
+        st.session_state["ub_date_range"] = (min_allowed_date, max_allowed_date)
         st.session_state["ub_start_time"] = dtime(0, 0)
         st.session_state["ub_end_time"] = dtime(23, 59)
         st.session_state["ub_min_req"] = 1
 
     date_range = st.date_input(
         "Date range",
-        min_value=all_dates.min(),
-        max_value=all_dates.max(),
+        min_value=min_allowed_date,
+        max_value=max_allowed_date,
         key="ub_date_range",
     )
     start_date, end_date = (date_range if isinstance(date_range, tuple) and len(date_range)==2
-                            else (all_dates.min(), all_dates.max()))
+                            else (min_allowed_date, max_allowed_date))
 
     tc1, tc2, tc3 = st.columns(3)
     with tc1:
@@ -1894,14 +2792,23 @@ with tab5:
         _rbar = st.progress(0, text="Refreshing dashboard ...")
         _rph  = st.empty()
 
-        _rbar.progress(5, text="📂 Step 1/4 — Preparing selected device data ...")
-        device_df = tmp_df.copy()
+        sessionized_key = (selected_device, int(session_gap))
+        sessionized_df = st.session_state.get("ub_sessionized_df")
+        if st.session_state.get("ub_sessionized_key") != sessionized_key or sessionized_df is None:
+            _rbar.progress(20, text=f"🔗 Building sessions once for {len(tmp_df):,} rows ...")
+            _rph.caption("⏳ Applying session logic and watch-time estimation to the full selected device")
+            sessionized_df = ub_build_sessions(tmp_df.copy(), gap_minutes=int(session_gap))
+            sessionized_df = ub_estimate_watch_minutes(sessionized_df, cap_seconds=WATCH_GAP_CAP_SECONDS)
+            st.session_state["ub_sessionized_df"] = sessionized_df
+            st.session_state["ub_sessionized_key"] = sessionized_key
+        else:
+            _rbar.progress(20, text="⚡ Reusing cached sessionized device data ...")
+            _rph.caption("⏳ Skipping session rebuild because the device and gap did not change")
 
-        _rbar.progress(60, text="📅 Step 2/4 — Applying date range filter ...")
-        _rph.caption("⏳ Filtering selected device by the chosen date range")
-        device_df = device_df[
-            (device_df["event_date"] >= start_date) &
-            (device_df["event_date"] <= end_date)
+        _rbar.progress(60, text="📅 Applying date range filter ...")
+        device_df = sessionized_df[
+            (sessionized_df["event_date"] >= start_date) &
+            (sessionized_df["event_date"] <= end_date)
         ].copy()
         if device_df.empty:
             st.session_state["ub_window_df"] = pd.DataFrame()
@@ -1912,14 +2819,7 @@ with tab5:
             st.warning("No data found for this device in the selected date range.")
             st.stop()
 
-        _rbar.progress(75, text=f"🔗 Step 3/4 — Detecting sessions across {len(device_df):,} rows ...")
-        _rph.caption("⏳ Applying time-gap + context-score session logic")
-        device_df = ub_build_sessions(device_df, gap_minutes=int(session_gap))
-
-        _rbar.progress(90, text="⏱️ Step 4/4 — Estimating watch minutes and time window ...")
-        _rph.caption("⏳ Calculating gap-based watch time per event")
-        device_df = ub_estimate_watch_minutes(device_df, cap_seconds=WATCH_GAP_CAP_SECONDS)
-
+        _rbar.progress(90, text="⏱️ Applying time window ...")
         window_df = device_df[
             (device_df["time_only"] >= start_time) &
             (device_df["time_only"] <= end_time)
@@ -1969,12 +2869,14 @@ with tab5:
     k5.metric("Top Content",      str(top_content)[:20])
     k6.metric("Device Type",      str(top_dev_type))
 
+    enable_geo_lookup = st.checkbox("🌍 Enable IP geo/ISP lookup for this window", value=False, key="ub_enable_geo_lookup")
+
     with st.expander("📋 Window summary", expanded=True):
         # ── Geo/ISP lookup on unique IPs ──────────────────────
         _geo_data    = {}
         _top_ip      = ""
         _geo_summary = {}
-        if "cliIP" in window_df.columns:
+        if enable_geo_lookup and "cliIP" in window_df.columns:
             _all_ips = window_df["cliIP"].dropna().astype(str).tolist()
             if _all_ips:
                 _top_ip = window_df["cliIP"].mode().iloc[0] if not window_df["cliIP"].mode().empty else ""
@@ -2231,6 +3133,26 @@ with tab5:
             mime="text/csv", key="ub_dl_content",
         )
 
+    pdf_bytes = ub_build_pdf_report(
+        window_df=window_df,
+        sess_df=sess_df,
+        content_window=content_window,
+        selected_device=selected_device,
+        start_date=start_date,
+        end_date=end_date,
+        top_channel=top_channel,
+        top_content=top_content,
+        est_watch_hrs=est_watch_hrs,
+        n_sessions=n_sessions,
+    )
+    st.download_button(
+        "📄 Download User Behavior Report (PDF)",
+        data=pdf_bytes,
+        file_name=f"user_behavior_report_{selected_device}_{date_label}.pdf",
+        mime="application/pdf",
+        key="ub_dl_pdf",
+    )
+
     with st.expander("ℹ️ How to read this dashboard"):
         st.markdown("""
 - **device_id** is extracted from the query string column via regex.
@@ -2240,3 +3162,200 @@ with tab5:
 - **Watch starts** = first event in each session — likely when the user pressed play.
 - This is behavioral estimation from CDN/access logs, not player telemetry.
         """)
+
+# ══════════════════════════════════════════════
+# TAB 6 — Global Behavior Dashboard
+# ══════════════════════════════════════════════
+with tab6:
+    st.subheader("🌐 Global Behavior Dashboard")
+    st.caption("This tab auto-runs for the selected date range. Behavior analytics use only rows with session metadata, while coverage shows how much of total traffic that represents.")
+
+    if not DUCKDB_OK:
+        st.error("DuckDB not installed. Run: `pip install duckdb`")
+        st.stop()
+    if not PLOTLY_OK:
+        st.error("Plotly not installed. Run: `pip install plotly`")
+        st.stop()
+
+    gb_cm = st.session_state.ub_col_map
+    gb_qs = gb_cm.get("queryStr", "")
+    gb_ts = gb_cm.get("reqTimeSec", "")
+    gb_path = gb_cm.get("reqPath", "")
+    if not gb_qs or not gb_ts or not gb_path:
+        st.warning("Please configure Query string, Timestamp, and Request path in the User Behavior column mapping first.")
+        st.stop()
+
+    gb_files = collect_files(valid_folders)
+    if not gb_files:
+        st.warning("No parquet files found in selected folders.")
+        st.stop()
+    gb_glob = [str(f) for f in gb_files]
+
+    g1, g2, g3, g4, g5 = st.columns([1, 1, 1, 1, 1])
+    with g1:
+        gb_entity = st.radio("Focus", ["Content", "Channel"], horizontal=True, key="gb_entity")
+    with g2:
+        gb_top_n = st.selectbox("Top N", [5, 10, 15, 20], index=1, key="gb_top_n")
+    with g3:
+        gb_daypart_mode = st.selectbox("Day-part mode", ["Default", "TV Style"], index=1, key="gb_daypart_mode")
+    with g4:
+        gb_timezone = st.selectbox("Timezone for day-part", ["Asia/Kolkata (IST)", "UTC", "Asia/Dubai", "Europe/London", "America/New_York", "America/Los_Angeles"], index=0, key="gb_timezone")
+    with g5:
+        gb_show_overall = st.checkbox("Show overall baseline", value=True, key="gb_show_overall")
+    gb_tz_offset = gb_tz_offset_hours(gb_timezone)
+
+    gb_channel_mode = "Clean"
+    if gb_entity == "Channel":
+        show_raw_channel = st.checkbox("Debug: use raw channel names instead of pure channels", value=False, key="gb_show_raw_channel")
+        gb_channel_mode = "Raw" if show_raw_channel else "Clean"
+        st.caption("Default is pure channel mode: platform/device suffixes after '_' are removed, while platform remains separate.")
+
+    default_end = pd.to_datetime("today").date()
+    default_start = default_end - pd.Timedelta(days=6)
+    gb_dates = st.date_input("Date range", value=(default_start, default_end), key="gb_date_range")
+    gb_start, gb_end = gb_dates if isinstance(gb_dates, tuple) and len(gb_dates) == 2 else (default_start, default_end)
+    gb_start_s, gb_end_s = str(gb_start), str(gb_end)
+
+    platform_values = gb_get_platform_values(gb_glob, gb_cm, gb_start_s, gb_end_s, gb_tz_offset)
+    gb_platform_filter = st.selectbox("Platform filter", ["(All)"] + platform_values, index=0, key="gb_platform_filter")
+    gb_use_behavior_cache = st.checkbox("⚡ Build behavior cache for this range (faster charts after first load)", value=True, key="gb_use_behavior_cache")
+
+    with st.spinner("Loading global behavior coverage ..."):
+        cov = gb_get_coverage(gb_glob, gb_cm, gb_start_s, gb_end_s, gb_tz_offset, gb_platform_filter)
+        overall_cov = gb_get_coverage(gb_glob, gb_cm, "1970-01-01", "2100-01-01", gb_tz_offset, gb_platform_filter) if gb_show_overall else None
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Rows in range", f"{cov['total_rows']:,}")
+    c2.metric("Behavior rows", f"{cov['behavior_rows']:,}")
+    c3.metric("Coverage", f"{cov['coverage_pct']:.2f}%")
+    c4.metric("Sessions", f"{cov['sessions']:,}")
+    c5.metric("Devices", f"{cov['devices']:,}")
+
+    if overall_cov is not None:
+        st.caption(f"Overall baseline — {overall_cov['behavior_rows']:,} behavior rows out of {overall_cov['total_rows']:,} total rows ({overall_cov['coverage_pct']:.2f}% coverage).")
+
+    if cov["behavior_rows"] == 0:
+        st.warning("No behavior rows found in this date range. Try widening the range.")
+        st.stop()
+
+    gb_cache_table = None
+    if gb_use_behavior_cache and cov["behavior_rows"] > 0:
+        with st.spinner("Preparing reusable behavior cache for this range ..."):
+            gb_cache_table = gb_prepare_behavior_cache(
+                gb_glob, gb_cm, folder_key, gb_start_s, gb_end_s,
+                gb_daypart_mode, gb_tz_offset, gb_platform_filter
+            )
+        st.caption("⚡ Behavior cache is ready. Day-part, stickiness, retention, and switching now reuse the same prepared slice instead of rescanning parquet each time.")
+
+    st.markdown("---")
+    with st.expander("✅ Pure Channel Master (business channel, platform kept separate)", expanded=True):
+        st.caption("This is the correct channel view: platform/device suffixes are removed from channel names, while platform remains a separate dimension. Do not use raw Unique Values for business channel reporting.")
+        with st.spinner("Building pure channel master ..."):
+            ch_master_df = gb_get_channel_master_smart(gb_glob, gb_cm, gb_start_s, gb_end_s, top_n=10000, timezone_offset_hours=gb_tz_offset, platform_filter=gb_platform_filter)
+        if ch_master_df.empty:
+            st.info("No channel metadata found for this range.")
+        else:
+            pure_summary = (
+                ch_master_df.groupby("pure_channel", dropna=False)
+                .agg(requests=("requests", "sum"), sessions=("sessions", "sum"), devices=("devices", "sum"), raw_variants=("raw_channel", "nunique"))
+                .reset_index()
+                .sort_values(["requests", "sessions"], ascending=False)
+            )
+            pc1, pc2 = st.columns([1, 1])
+            with pc1:
+                st.markdown("**Pure channel summary**")
+                st.dataframe(pure_summary, use_container_width=True, hide_index=True, height=340)
+                st.download_button(
+                    "📥 Download Pure Channel Summary CSV",
+                    data=pure_summary.to_csv(index=False).encode("utf-8"),
+                    file_name=f"pure_channel_summary_{gb_start_s}_to_{gb_end_s}.csv",
+                    mime="text/csv",
+                    key="gb_dl_pure_channel_summary",
+                )
+            with pc2:
+                st.markdown("**Raw → clean audit mapping**")
+                st.dataframe(ch_master_df, use_container_width=True, hide_index=True, height=340)
+                st.download_button(
+                    "📥 Download Raw-to-Pure Channel Mapping CSV",
+                    data=ch_master_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"channel_raw_to_clean_{gb_start_s}_to_{gb_end_s}.csv",
+                    mime="text/csv",
+                    key="gb_dl_raw_pure_channel_mapping",
+                )
+
+    st.markdown("---")
+    sec1, sec2, sec3, sec4 = st.tabs(["🌅 Day-part", "📌 Stickiness", "⏱️ Retention Proxy", "🔁 Switching"])
+
+    with sec1:
+        with st.spinner("Loading day-part analytics ..."):
+            if gb_cache_table:
+                day_df = gb_get_daypart_top_cached(gb_cache_table, gb_entity, int(gb_top_n), gb_channel_mode)
+            else:
+                day_df = gb_get_daypart_top(gb_glob, gb_cm, gb_start_s, gb_end_s, gb_entity, int(gb_top_n), gb_daypart_mode, gb_channel_mode, gb_tz_offset, gb_platform_filter)
+        if day_df.empty:
+            st.info("No day-part data found.")
+        else:
+            st.dataframe(day_df, use_container_width=True, hide_index=True, height=340)
+            fig_dp = px.bar(day_df, x="day_part", y="sessions", color="entity_name", title=f"Top {gb_top_n} {gb_entity.lower()} by day-part")
+            fig_dp.update_layout(height=480)
+            st.plotly_chart(fig_dp, use_container_width=True)
+
+    with sec2:
+        with st.spinner("Loading stickiness analytics ..."):
+            if gb_cache_table:
+                sticky_df = gb_get_stickiness_cached(gb_cache_table, gb_entity, max(int(gb_top_n) * 3, 15), gb_channel_mode)
+            else:
+                sticky_df = gb_get_stickiness(gb_glob, gb_cm, gb_start_s, gb_end_s, gb_entity, max(int(gb_top_n) * 3, 15), gb_daypart_mode, gb_channel_mode, gb_tz_offset, gb_platform_filter)
+        if sticky_df.empty:
+            st.info("No stickiness data found.")
+        else:
+            st.dataframe(sticky_df, use_container_width=True, hide_index=True, height=360)
+            fig_st = px.scatter(sticky_df, x="requests", y="avg_watch_per_request", size="sessions", color="label", hover_name="entity_name", title=f"{gb_entity} stickiness")
+            fig_st.update_layout(height=520)
+            st.plotly_chart(fig_st, use_container_width=True)
+
+    with sec3:
+        with st.spinner("Loading retention proxy analytics ..."):
+            if gb_cache_table:
+                ret_df = gb_get_retention_buckets_cached(gb_cache_table, gb_entity, int(gb_top_n), gb_channel_mode)
+            else:
+                ret_df = gb_get_retention_buckets(gb_glob, gb_cm, gb_start_s, gb_end_s, gb_entity, int(gb_top_n), gb_daypart_mode, gb_channel_mode, gb_tz_offset, gb_platform_filter)
+        if ret_df.empty:
+            st.info("No retention proxy data found.")
+        else:
+            st.dataframe(ret_df, use_container_width=True, hide_index=True, height=320)
+            fig_rt = px.bar(ret_df, x="entity_name", y="sessions", color="watch_bucket", title=f"{gb_entity} retention buckets")
+            fig_rt.update_layout(height=520, xaxis_title=gb_entity)
+            st.plotly_chart(fig_rt, use_container_width=True)
+
+    with sec4:
+        with st.spinner("Loading switching analytics ..."):
+            if gb_cache_table:
+                trans_df, rate_df, sess_bucket_df = gb_get_switching_cached(gb_cache_table, max(int(gb_top_n) * 2, 10), gb_channel_mode)
+            else:
+                trans_df, rate_df, sess_bucket_df = gb_get_switching(gb_glob, gb_cm, gb_start_s, gb_end_s, max(int(gb_top_n) * 2, 10), gb_daypart_mode, gb_channel_mode, gb_tz_offset, gb_platform_filter)
+        s1, s2 = st.columns([2, 1])
+        with s1:
+            st.markdown("**Top channel transitions**")
+            st.dataframe(trans_df, use_container_width=True, hide_index=True, height=300)
+        with s2:
+            st.markdown("**Switches per session**")
+            st.dataframe(sess_bucket_df, use_container_width=True, hide_index=True)
+        if not rate_df.empty:
+            fig_sw = px.bar(rate_df.head(15), x="switch_away_pct", y="channel_name", orientation="h", title="Channels with highest switch-away rate")
+            fig_sw.update_layout(height=500, yaxis={"categoryorder": "total ascending"})
+            st.plotly_chart(fig_sw, use_container_width=True)
+
+
+    st.markdown("---")
+    st.subheader("📦 Global exports")
+    export_cols = st.columns(4)
+    with export_cols[0]:
+        st.download_button("📥 Day-part CSV", data=day_df.to_csv(index=False).encode("utf-8") if 'day_df' in locals() and day_df is not None else b"", file_name=f"global_daypart_{gb_start_s}_to_{gb_end_s}.csv", mime="text/csv", key="gb_dl_daypart_csv")
+    with export_cols[1]:
+        st.download_button("📥 Stickiness CSV", data=sticky_df.to_csv(index=False).encode("utf-8") if 'sticky_df' in locals() and sticky_df is not None else b"", file_name=f"global_stickiness_{gb_start_s}_to_{gb_end_s}.csv", mime="text/csv", key="gb_dl_stickiness_csv")
+    with export_cols[2]:
+        st.download_button("📥 Retention CSV", data=ret_df.to_csv(index=False).encode("utf-8") if 'ret_df' in locals() and ret_df is not None else b"", file_name=f"global_retention_{gb_start_s}_to_{gb_end_s}.csv", mime="text/csv", key="gb_dl_retention_csv")
+    with export_cols[3]:
+        pdf_bytes = gb_build_global_pdf_report(cov, day_df if 'day_df' in locals() else pd.DataFrame(), sticky_df if 'sticky_df' in locals() else pd.DataFrame(), ret_df if 'ret_df' in locals() else pd.DataFrame(), trans_df if 'trans_df' in locals() else pd.DataFrame(), rate_df if 'rate_df' in locals() else pd.DataFrame(), sess_bucket_df if 'sess_bucket_df' in locals() else pd.DataFrame(), gb_start_s, gb_end_s, gb_entity, gb_platform_filter, gb_timezone)
+        st.download_button("📄 Global PDF", data=pdf_bytes, file_name=f"global_behavior_report_{gb_start_s}_to_{gb_end_s}.pdf", mime="application/pdf", key="gb_dl_pdf")

@@ -4,7 +4,7 @@ from pathlib import Path
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
-FOLDER_PATH = r'D:\VETO Logs\07'
+FOLDER_PATH = r'Z:\Veto Logs\23'
 
 def extract_sparse_data(file_path):
     """Worker function to find unique non-placeholder values in specific columns."""
