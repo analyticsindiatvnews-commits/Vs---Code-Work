@@ -23,3 +23,13 @@ Resources: 23GB RAM allocated, 11 threads used.
 20.parquet: Original 18295985, Cleaned 18293088, Removed 2897
 21.parquet: Original 18969201, Cleaned 18967790, Removed 1411
 22.parquet: Original 19332699, Cleaned 19331776, Removed 923
+
+
+VETO LOGS CLEANING REPORT - 2026-04-28 11:30:05
+Resources: 23GB RAM allocated, 11 threads used.
+------------------------------------------------------------
+23.parquet: Original 23329655, Cleaned 23328625, Removed 1030
+24.parquet: Original 20132515, Cleaned 20130166, Removed 2349
+25.parquet: Original 18077126, Cleaned 18075462, Removed 1664
+26.parquet: Original 18476303, Cleaned 18475819, Removed 484
+
