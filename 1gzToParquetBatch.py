@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-gz_to_parquet.py  —  Interactive .gz JSONL → Parquet converter
-Just run:  python gz_to_parquet.py
-No arguments needed — it will ask you everything.
-
-pip install orjson pyarrow tqdm
-"""
-
 import os
 import sys
 import csv

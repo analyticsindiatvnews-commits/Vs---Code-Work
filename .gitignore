@@ -1,6 +1,6 @@
 # Virtual environment
 venv/
-
+.env
 # Temp folders
 tmp/
 .tmp/
@@ -19,6 +19,7 @@ __pycache__/
 
 # Optional: screenshots / design refs
 SS/
+superset/
 
 # CSV / Excel
 *.csv
