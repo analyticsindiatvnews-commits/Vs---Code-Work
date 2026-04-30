@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  cdn-intelligence:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # This maps your Windows folder to the /data folder inside Docker
+      - "D:/Vs - Code Work/cleaned_output:/data:ro"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
